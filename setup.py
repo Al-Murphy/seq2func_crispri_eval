@@ -26,7 +26,7 @@ setup(
         "enformer": ["enformer-pytorch"],
         "borzoi": ["borzoi-pytorch"],
         "ntv3": ["transformers"],
-        "alphagenome": ["alphagenome-pytorch", "clgenomics"],
+        "alphagenome": ["alphagenome-pytorch", "huggingface_hub"],
         "dev": ["pytest"],
     },
 )

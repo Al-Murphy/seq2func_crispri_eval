@@ -94,8 +94,8 @@ def parse_args():
         "--backbone_model_path", type=str, default=None,
         help=(
             "Path to AlphaGenome pretrained weights (.safetensors or .pth). "
-            "If omitted, weights are downloaded from HuggingFace (all-folds model "
-            "via the clgenomics AlphaGenome wrapper)."
+            "If omitted, the all-folds model is downloaded from HuggingFace "
+            "(``gtca/alphagenome_pytorch / model_all_folds.safetensors``)."
         ),
     )
     p.add_argument("--organism_index", type=int, default=0,
@@ -323,21 +323,24 @@ def get_alphagenome_track_indices(metadata_path, cell_line, output_type, n_total
 # ---------------------------------------------------------------------------
 
 def load_base_model(backbone_path, device):
-    """Load pretrained AlphaGenome via the clgenomics wrapper.
+    """Load pretrained AlphaGenome.
 
-    When *backbone_path* is None, the wrapper auto-downloads
-    ``model_all_folds.safetensors`` from HuggingFace ``gtca/alphagenome_pytorch``.
-    Going through the wrapper (rather than calling ``alphagenome_pytorch.AlphaGenome()``
-    directly) is critical: the raw class does NOT auto-download and would silently
-    return a randomly-initialised model.
+    If *backbone_path* is None, downloads the all-folds weights from HuggingFace
+    (``gtca/alphagenome_pytorch`` / ``model_all_folds.safetensors``). Always go
+    through ``from_pretrained`` — calling ``alphagenome_pytorch.AlphaGenome()``
+    bare would silently return a randomly-initialised model.
     """
-    from clgenomics.models.bases import AlphaGenome as CLAlphaGenome
+    from alphagenome_pytorch import AlphaGenome
     if backbone_path is None:
+        from huggingface_hub import hf_hub_download
         print("Loading base AlphaGenome (HuggingFace all-folds weights via gtca/alphagenome_pytorch)")
+        backbone_path = hf_hub_download(
+            repo_id="gtca/alphagenome_pytorch",
+            filename="model_all_folds.safetensors",
+        )
     else:
         print("Loading base AlphaGenome from: {}".format(backbone_path))
-    cl_ag = CLAlphaGenome(pretrained_path=backbone_path, device=device)
-    model = cl_ag.model
+    model = AlphaGenome.from_pretrained(backbone_path, device=device)
     model.eval()
     return model
 

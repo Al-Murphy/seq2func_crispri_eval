@@ -34,8 +34,8 @@ These cost ≥ 30 min per model on a single A100. Validate them manually with
 ## Optional dependencies
 
 Each test script imports its model package at the top (`enformer_pytorch`,
-`borzoi_pytorch`, `transformers`, `clgenomics`). If the package is not
-installed, the corresponding `test_*` invocations are **skipped**, not
+`borzoi_pytorch`, `transformers`, `alphagenome_pytorch`). If the package is
+not installed, the corresponding `test_*` invocations are **skipped**, not
 failed (see `_load_script_module` in `conftest.py` and the
 `ModuleNotFoundError` handling in `test_scripts_cli.py`).
 

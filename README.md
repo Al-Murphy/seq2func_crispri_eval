@@ -1,12 +1,19 @@
 # seq2func_crispri_eval
 
-Zero-shot CRISPRi enhancer-perturbation evaluation for sequence-to-function
+This repo deals with current state-of-the-art sequence-to-function and pretrained 
+genomic deep learning models' performance at predicting the effect across distal
+__cis__-regulatory elements (CREs). 
+
+This benchmark was first conducted by [Karollus et al., 2023](https://link.springer.com/article/10.1186/s13059-023-02899-9).
+
+
+It is a zero-shot CRISPRi enhancer-perturbation evaluation for sequence-to-function
 genomic deep-learning models on two pooled CRISPRi screens:
 
-- **Fulco et al. 2019** (CRISPRi-FlowFISH), aligned to the Avsec / Karollus
+- **[Fulco et al. 2019](https://pubmed.ncbi.nlm.nih.gov/31784727/)** (CRISPRi-FlowFISH), aligned to the Avsec / Karollus
   windows from the [SequenceModelBenchmark Zenodo](https://zenodo.org/records/8275436)
   release.
-- **Gasperini et al. 2019** high-confidence enhancer-gene pairs.
+- **[Gasperini et al. 2019](https://pubmed.ncbi.nlm.nih.gov/30612741/)** high-confidence enhancer-gene pairs.
 
 Four models are supported out of the box:
 
@@ -15,16 +22,15 @@ Four models are supported out of the box:
 | Enformer    | HuggingFace `EleutherAI/enformer-official-rough` | 196,608 bp | 128 bp |
 | Borzoi / Flashzoi | HuggingFace `johahi/borzoi-replicate-{0..3}` (`flashzoi-...`) | 524,288 bp | 32 bp |
 | NTv3        | HuggingFace `InstaDeepAI/NTv3_650M_post`         | 1,048,576 bp | 1 bp |
-| AlphaGenome | HuggingFace `gtca/alphagenome_pytorch` (via [`clgenomics`](https://github.com/anonymous-link/clgenomics) wrapper) | 1,048,576 bp | 1 bp |
+| AlphaGenome | HuggingFace `gtca/alphagenome_pytorch` (auto-downloaded via `huggingface_hub`)        | 1,048,576 bp | 1 bp |
 
 For each enhancer-gene pair, the model scores the wild-type sequence centred on
 the gene's TSS, then scores `N` dinucleotide-shuffled negatives in which the
 enhancer slice has been scrambled in place. The predicted fractional drop
 `(WT - mean CRISPRi) / WT` is correlated against the measured CRISPRi effect.
 
-> **Scope.** This repo evaluates **base / pretrained** models. The companion
-> [`clgenomics`](https://github.com/anonymous-link/clgenomics) project covers
-> fine-tuning on CRISPRi data.
+> **Scope.** This repo evaluates **base / pretrained** models only. CRISPRi
+> fine-tuning lives in a separate project.
 
 ---
 
@@ -88,7 +94,7 @@ Install only the model dependencies for the models you plan to run:
 pip install enformer-pytorch     # Enformer
 pip install borzoi-pytorch       # Borzoi / Flashzoi
 pip install transformers         # NTv3
-pip install alphagenome-pytorch clgenomics   # AlphaGenome
+pip install alphagenome-pytorch huggingface_hub  # AlphaGenome
 ```
 
 The first run will download a reference genome to `./.cache/` via `pysam`

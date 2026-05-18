@@ -225,14 +225,24 @@ def get_alphagenome_track_indices(metadata_path, cell_line, output_type, n_total
 
 
 def load_base_model(backbone_path, device):
-    """Load pretrained AlphaGenome via the clgenomics wrapper."""
-    from clgenomics.models.bases import AlphaGenome as CLAlphaGenome
+    """Load pretrained AlphaGenome.
+
+    If *backbone_path* is None, downloads the all-folds weights from HuggingFace
+    (``gtca/alphagenome_pytorch`` / ``model_all_folds.safetensors``). Always go
+    through ``from_pretrained`` — calling ``alphagenome_pytorch.AlphaGenome()``
+    bare would silently return a randomly-initialised model.
+    """
+    from alphagenome_pytorch import AlphaGenome
     if backbone_path is None:
+        from huggingface_hub import hf_hub_download
         print("Loading base AlphaGenome (HuggingFace all-folds weights via gtca/alphagenome_pytorch)")
+        backbone_path = hf_hub_download(
+            repo_id="gtca/alphagenome_pytorch",
+            filename="model_all_folds.safetensors",
+        )
     else:
         print("Loading base AlphaGenome from: {}".format(backbone_path))
-    cl_ag = CLAlphaGenome(pretrained_path=backbone_path, device=device)
-    model = cl_ag.model
+    model = AlphaGenome.from_pretrained(backbone_path, device=device)
     model.eval()
     return model
 
