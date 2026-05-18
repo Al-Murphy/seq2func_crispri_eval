@@ -29,3 +29,6 @@ transformers
 
 # AlphaGenome (PyTorch port). clgenomics wraps this.
 alphagenome-pytorch
+
+# Dev / tests (optional)
+pytest

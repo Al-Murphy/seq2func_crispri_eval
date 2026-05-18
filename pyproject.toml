@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+filterwarnings = [
+    # Pandas/numpy chatter we don't care about during tests
+    "ignore::DeprecationWarning:pandas",
+    "ignore::DeprecationWarning:numpy",
+]
