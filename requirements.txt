@@ -1,0 +1,31 @@
+# Core
+numpy
+pandas
+scipy
+torch
+tqdm
+pysam
+matplotlib
+seaborn
+
+# Sequence utilities
+tangermeme
+
+# clgenomics (provides AlphaGenome model wrapper used by test_*_alphagenome.py).
+# Install from source: https://github.com/<your-org>/clgenomics
+clgenomics
+
+# Model-specific dependencies. Install only what you need for the model(s) you
+# plan to run. None of these are required for the dataset / plotting code.
+
+# Enformer
+enformer-pytorch
+
+# Borzoi / Flashzoi
+borzoi-pytorch
+
+# NTv3
+transformers
+
+# AlphaGenome (PyTorch port). clgenomics wraps this.
+alphagenome-pytorch
