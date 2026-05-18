@@ -1,7 +1,7 @@
-# genomic_dl_crispri_eval
+# seq2func_crispri_eval
 
-Zero-shot CRISPRi enhancer-perturbation evaluation for genomic deep-learning
-models on two pooled CRISPRi screens:
+Zero-shot CRISPRi enhancer-perturbation evaluation for sequence-to-function
+genomic deep-learning models on two pooled CRISPRi screens:
 
 - **Fulco et al. 2019** (CRISPRi-FlowFISH), aligned to the Avsec / Karollus
   windows from the [SequenceModelBenchmark Zenodo](https://zenodo.org/records/8275436)
@@ -31,7 +31,7 @@ enhancer slice has been scrambled in place. The predicted fractional drop
 ## Repository layout
 
 ```
-genomic_dl_crispri_eval/
+seq2func_crispri_eval/
 ├── crispri_eval/             # Python package (dataset loaders + utils)
 │   ├── datasets.py           #   FulcoDataset, GasperiniDataset
 │   ├── dataset_utils.py      #   genome fetch, one-hot, dinucleotide shuffle
@@ -59,6 +59,8 @@ genomic_dl_crispri_eval/
 │   └── Gasperini_gene_exons_hg38.csv
 │
 ├── examples/run_all.sh       # End-to-end launch script (8 evals + 2 plots)
+├── tests/                    # pytest suite (smoke + unit + metadata integrity)
+├── pyproject.toml            # pytest config
 ├── requirements.txt
 ├── LICENSE                   # MIT
 └── README.md                 # this file
@@ -73,8 +75,8 @@ the `crispri_eval/` package.
 ## Installation
 
 ```bash
-git clone https://github.com/<you>/genomic_dl_crispri_eval.git
-cd genomic_dl_crispri_eval
+git clone https://github.com/<you>/seq2func_crispri_eval.git
+cd seq2func_crispri_eval
 python -m venv .venv && source .venv/bin/activate
 pip install -e .              # installs the crispri_eval package
 pip install -r requirements.txt
@@ -183,6 +185,20 @@ duplication on purpose: each script is self-contained so a reader can audit
 one model's evaluation without chasing imports. If you add a fifth model and
 find yourself copy-pasting more than ~40 lines of glue, consider lifting a
 helper into `crispri_eval/`.
+
+---
+
+## Tests
+
+```bash
+pip install -e .[dev]
+pytest
+```
+
+See [`tests/README.md`](tests/README.md) for what is and isn't covered. The
+suite is non-GPU and uses no model weights; per-model tests skip if the
+model's optional dependency (`borzoi_pytorch`, `enformer_pytorch`, …) is not
+installed.
 
 ---
 
