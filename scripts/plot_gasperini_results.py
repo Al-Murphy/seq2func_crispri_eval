@@ -603,6 +603,11 @@ def plot_log2_scatter_panels(
         sc = ax.scatter(x_f, y_f, s=20, alpha=0.85, c=d_f, cmap=cmap,
                         norm=norm, edgecolor="none", zorder=3)
 
+        # x=y reference line: drawn with axline so it spans the axes without
+        # autoscaling them (keeps the plotting window position fixed).
+        ax.axline((0, 0), slope=1, color="grey", linewidth=0.8,
+                  linestyle="-", alpha=0.4, zorder=1)
+
         if len(x_f) >= 2 and np.std(x_f) > 1e-12:
             m, b = np.polyfit(x_f, y_f, deg=1)
             xlo, xhi = x_f.min(), x_f.max()
@@ -728,6 +733,11 @@ def plot_effect_scatter_panels(result_files, labels, output_path, dpi, max_enh_d
                                marker="v", edgecolor="none", zorder=4)
             if sc is None:
                 sc = sc_tr
+
+        # x=y reference line: drawn with axline so it spans the axes without
+        # autoscaling them (keeps the plotting window position fixed).
+        ax.axline((0, 0), slope=1, color="grey", linewidth=0.8,
+                  linestyle="-", alpha=0.4, zorder=1)
 
         if len(df) >= 2 and np.std(x) > 0:
             m, b = np.polyfit(x, y_raw, deg=1)
