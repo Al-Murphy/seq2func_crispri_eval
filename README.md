@@ -144,6 +144,45 @@ combined-model plots `./results/plots/{fulco,gasperini}_all_models.png`.
 
 ---
 
+## Test-time augmentation (AlphaGenome RNA-Seq)
+
+The AlphaGenome scripts support test-time augmentation (TTA) matching Karollus
+et al. 2023: average the prediction over **3 sequence shifts** (`−43, 0, +43`
+bp) **× forward + reverse-complement** = 6 forward passes per sequence. Shifts
+are applied by rolling the one-hot input (readout indices shift in lockstep);
+the reverse-complement pass flips the sequence and reads the **minus-strand**
+RNA-Seq tracks at flipped positions.
+
+```bash
+python scripts/test_fulco_alphagenome.py \
+    --modality rna_seq --tta_shifts -43,0,43 --tta_rev_comp
+```
+
+`--tta_shifts 0` (default) + no `--tta_rev_comp` is a single forward pass (no
+TTA, original behaviour). TTA multiplies forward passes by 6, so for the 1 Mb
+AlphaGenome model it is best run sharded on a cluster:
+
+```bash
+# Each array task processes pairs[shard_idx::num_shards] and writes a shard CSV.
+python scripts/test_fulco_alphagenome.py \
+    --modality rna_seq --tta_shifts -43,0,43 --tta_rev_comp \
+    --num_shards 8 --shard_idx $SLURM_ARRAY_TASK_ID \
+    --save_path ./results/test_Fulco_alphagenome_tta/
+
+# After all shards finish, concatenate + compute correlations:
+python scripts/merge_tta_shards.py \
+    --shards './results/test_Fulco_alphagenome_tta/Fulco_AlphaGenome_base_rna_seq_shard*of008_results.csv' \
+    --output_prefix Fulco_AlphaGenome_base_rna_seq_tta \
+    --fulco_corr_observed_subset knockdown_only
+```
+
+A ready-to-edit SLURM array template is in
+[`examples/slurm_ag_tta_array.sh`](examples/slurm_ag_tta_array.sh) (set the
+partition/QOS and array size for your cluster; pre-populate the `./.cache`
+genome once before launching the array to avoid concurrent-download races).
+
+---
+
 ## Plotting
 
 ```bash

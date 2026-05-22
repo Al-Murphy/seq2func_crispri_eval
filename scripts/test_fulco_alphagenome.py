@@ -200,11 +200,46 @@ def parse_args():
         help="Include per-pair diagnostics (exon bp, track counts, WT/shuffle spread).",
     )
 
+    # -- Test-time augmentation (TTA) -----------------------------------------
+    p.add_argument(
+        "--tta_shifts", type=str, default="0",
+        help=(
+            "Comma-separated bp shifts for test-time augmentation, applied by rolling "
+            "the input and shifting the readout indices in lockstep. Default '0' = no "
+            "shift. Karollus 2023 used '-43,0,43' (1/3-bin sampling for Enformer)."
+        ),
+    )
+    p.add_argument(
+        "--tta_rev_comp", action="store_true",
+        help=(
+            "Add reverse-complement passes to TTA (flip the sequence, read minus-strand "
+            "RNA-Seq tracks at flipped positions). With --tta_shifts -43,0,43 this gives "
+            "the 6-pass Karollus-matched augmentation."
+        ),
+    )
+
+    # -- Sharding (for SLURM array parallelisation) ---------------------------
+    p.add_argument(
+        "--num_shards", type=int, default=1,
+        help="Split the enhancer-gene pairs into this many strided shards (for cluster arrays).",
+    )
+    p.add_argument(
+        "--shard_idx", type=int, default=0,
+        help="0-based shard index in [0, num_shards). Each shard processes pairs[shard_idx::num_shards].",
+    )
+
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--prefetch_factor", type=int, default=4)
 
-    return p.parse_args()
+    args = p.parse_args()
+
+    if args.num_shards < 1:
+        p.error("--num_shards must be >= 1")
+    if not (0 <= args.shard_idx < args.num_shards):
+        p.error("--shard_idx must be in [0, num_shards)")
+
+    return args
 
 
 # ---------------------------------------------------------------------------
@@ -349,10 +384,38 @@ def load_base_model(backbone_path, device):
 # Inference
 # ---------------------------------------------------------------------------
 
-def _aggregate_rna(rna_central):
-    """Sum predictions over the TSS window and selected tracks (one scalar per batch row)."""
-    total = rna_central.sum(dim=(1, 2))
-    return total.tolist()
+def _forward_once(ag_model, x, organism_index, track_inds, device, modality):
+    """One AlphaGenome forward pass; return (B, seq_len, n_selected) signal on the chosen tracks."""
+    B = x.shape[0]
+    org_idx = torch.full((B,), organism_index, dtype=torch.long, device=device)
+    head_key = "cage" if modality == "cage" else "rna_seq"
+    with torch.no_grad():
+        outputs = ag_model(x.to(device), org_idx)
+    if head_key not in outputs:
+        raise KeyError(
+            "AlphaGenome outputs missing {!r}; keys: {}".format(head_key, list(outputs.keys()))
+        )
+    return outputs[head_key][1][:, :, track_inds]  # (B, seq_len, n_selected) NLC
+
+
+def _aggregate_sig(sig, modality, window_bp, center_index, exon_idx):
+    """Reduce a (B, seq_len, n_tracks) signal tensor to one scalar per batch row.
+
+    RNA-Seq with exon positions: mean over exon bp → mean over tracks (AlphaGenome paper).
+    Otherwise (CAGE, or RNA-Seq with no exon mask): sum over a ``window_bp`` window
+    centred on ``center_index``, then over tracks.
+    """
+    if modality == "rna_seq" and exon_idx:
+        idx_t = torch.tensor(exon_idx, dtype=torch.long, device=sig.device)
+        return sig[:, idx_t, :].mean(dim=1).mean(dim=1).tolist()
+
+    L = sig.shape[1]
+    center = L // 2 if center_index is None else max(0, min(L - 1, int(center_index)))
+    half_lo = window_bp // 2
+    half_hi = window_bp - half_lo
+    start = max(0, center - half_lo)
+    end = min(L, center + half_hi)
+    return sig[:, start:end, :].sum(dim=(1, 2)).tolist()
 
 
 # ---------------------------------------------------------------------------
@@ -465,56 +528,71 @@ def _predict_base_single(
     ag_model,
     x,
     organism_index,
-    track_inds,
+    track_bundle,
     window_bp,
     device,
     modality="rna_seq",
     tss_center_index=None,
     exon_seq_idx=None,
+    tta_shifts=(0,),
+    tta_rev_comp=False,
 ):
     """
-    Aggregate 1 bp predictions for a batch of sequences.
+    Aggregate 1 bp predictions for a batch of sequences, optionally averaging over
+    test-time augmentations (TTA).
 
-    For ``modality="rna_seq"`` with *exon_seq_idx* supplied (AlphaGenome paper approach):
-      - Extract signal at exon tensor positions → mean over exon bp → mean over tracks.
-    Otherwise (CAGE or rna_seq fallback with no exon mask):
-      - Sum signal over ``window_bp`` bp centred on *tss_center_index*.
+    Augmentation set = ``tta_shifts`` × {forward} ∪ (``tta_shifts`` × {reverse-complement}
+    if ``tta_rev_comp``). The Karollus-matched setting is ``tta_shifts=(-43, 0, 43)`` +
+    ``tta_rev_comp=True`` → 6 forward passes per sequence, averaged. The default
+    ``tta_shifts=(0,)``, ``tta_rev_comp=False`` is a single forward pass (no TTA).
+
+    Each augmentation is applied to the one-hot tensor directly (no genome re-fetch):
+      * shift ``s``: ``torch.roll(x, s, dim=1)`` and shift the readout indices by ``s``
+        (the far edges wrap ~500 kb from the TSS — negligible for the central readout);
+      * reverse-complement: ``torch.flip(x, [1, 2])``, read the **minus-strand** tracks
+        at flipped indices ``L-1-idx``.
+
+    ``track_bundle`` is the {"plus", "minus", "all"} dict from
+    ``get_alphagenome_track_indices`` (forward passes use ``plus``, RC passes use ``minus``).
     """
-    B = x.shape[0]
-    org_idx = torch.full((B,), organism_index, dtype=torch.long, device=device)
-    head_key = "cage" if modality == "cage" else "rna_seq"
+    L = x.shape[1]
+    if isinstance(track_bundle, dict):
+        plus_inds = track_bundle["plus"]
+        minus_inds = track_bundle["minus"]
+    else:  # plain list (strand-unaware) — same indices for both orientations
+        plus_inds = minus_inds = track_bundle
 
-    with torch.no_grad():
-        outputs = ag_model(x.to(device), org_idx)
-    if head_key not in outputs:
-        raise KeyError(
-            "AlphaGenome outputs missing {!r}; keys: {}".format(head_key, list(outputs.keys()))
-        )
-    sig = outputs[head_key][1]       # (B, seq_len, n_tracks) NLC
-    sig = sig[:, :, track_inds]      # (B, seq_len, n_selected)
+    orients = [("fw", plus_inds)]
+    if tta_rev_comp:
+        orients.append(("rc", minus_inds))
 
-    if modality == "rna_seq" and exon_seq_idx:
-        # AlphaGenome paper: mean over exon positions, then mean over K562 tracks
-        idx_t = torch.tensor(exon_seq_idx, dtype=torch.long, device=sig.device)
-        sig_exons = sig[:, idx_t, :]
-        scores = sig_exons.mean(dim=1).mean(dim=1)
-        return scores.tolist()
+    acc = None
+    n_aug = 0
+    for s in tta_shifts:
+        s = int(s)
+        x_sh = x if s == 0 else torch.roll(x, shifts=s, dims=1)
+        for orient, inds in orients:
+            if orient == "fw":
+                x_var = x_sh
+                aug_exon = (
+                    [min(L - 1, max(0, e + s)) for e in exon_seq_idx] if exon_seq_idx else exon_seq_idx
+                )
+                aug_center = None if tss_center_index is None else tss_center_index + s
+            else:  # rc: shift first (in genomic window terms), then reverse-complement
+                x_var = torch.flip(x_sh, dims=[1, 2])
+                aug_exon = (
+                    [min(L - 1, max(0, (L - 1) - (e + s))) for e in exon_seq_idx]
+                    if exon_seq_idx else exon_seq_idx
+                )
+                aug_center = None if tss_center_index is None else (L - 1) - (tss_center_index + s)
 
-    # TSS-window fallback
-    L = sig.shape[1]
-    if tss_center_index is None:
-        center = L // 2
-    else:
-        center = int(tss_center_index)
-        center = max(0, min(L - 1, center))
+            sig = _forward_once(ag_model, x_var, organism_index, inds, device, modality)
+            scores = _aggregate_sig(sig, modality, window_bp, aug_center, aug_exon)
+            scores_t = torch.tensor(scores, dtype=torch.float64)
+            acc = scores_t if acc is None else acc + scores_t
+            n_aug += 1
 
-    half_lo = window_bp // 2
-    half_hi = window_bp - half_lo
-    start = max(0, center - half_lo)
-    end = min(L, center + half_hi)
-    sig_central = sig[:, start:end, :]
-
-    return _aggregate_rna(sig_central)
+    return (acc / n_aug).tolist()
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +652,26 @@ def main():
         gene_tss_csv=args.gene_tss_csv,
         observed_subset=args.fulco_corr_observed_subset,
     )
+
+    # ---- Test-time augmentation config --------------------------------------
+    tta_shifts = tuple(int(s) for s in args.tta_shifts.split(",") if str(s).strip())
+    if not tta_shifts:
+        tta_shifts = (0,)
+    n_passes = len(tta_shifts) * (2 if args.tta_rev_comp else 1)
+    if n_passes > 1:
+        print("Test-time augmentation: shifts={} bp, rev_comp={} → {} forward passes/seq".format(
+            list(tta_shifts), args.tta_rev_comp, n_passes
+        ))
+
+    # ---- Shard the pairs (for SLURM array parallelisation) ------------------
+    if args.num_shards > 1:
+        n_all = len(dataset.crispri_data)
+        dataset.crispri_data = (
+            dataset.crispri_data.iloc[args.shard_idx::args.num_shards].reset_index(drop=True)
+        )
+        print("Shard {}/{}: {} of {} pairs".format(
+            args.shard_idx, args.num_shards, len(dataset.crispri_data), n_all
+        ))
 
     # ---- Exon annotations (rna_seq only) ------------------------------------
     exon_coords = None
@@ -664,12 +762,14 @@ def main():
                 model,
                 x_batch,
                 args.organism_index,
-                cur_track_inds,
+                track_inds,  # full {plus/minus/all} bundle (RC TTA reads minus tracks)
                 effective_window_bp,
                 device,
                 modality=args.modality,
                 tss_center_index=tss_idx,
                 exon_seq_idx=_cur_exon_idx,
+                tta_shifts=tta_shifts,
+                tta_rev_comp=args.tta_rev_comp,
             )
 
         pred_wt = _predict_batch(x_wt)[0]
@@ -733,6 +833,31 @@ def main():
         df_results["debug_crispri_min"] = all_debug_crispri_min
         df_results["debug_crispri_max"] = all_debug_crispri_max
 
+    # Resolve output prefix (shared by shard CSVs and the full summary).
+    if args.output_prefix is None:
+        output_prefix = "Fulco_AlphaGenome_base_{}".format(args.modality)
+    else:
+        output_prefix = args.output_prefix
+
+    # In sharded mode, write only this shard's per-pair CSV; the merge step
+    # (scripts/merge_tta_shards.py) concatenates shards and computes correlations.
+    if args.num_shards > 1:
+        shard_csv = os.path.join(
+            args.save_path,
+            "{}_shard{:03d}of{:03d}_results.csv".format(
+                output_prefix, args.shard_idx, args.num_shards
+            ),
+        )
+        df_results.to_csv(shard_csv, index=False)
+        print("\nShard {}/{} results saved to: {}".format(
+            args.shard_idx, args.num_shards, shard_csv))
+        print("Merge with: python scripts/merge_tta_shards.py "
+              "--shards '{}/{}_shard*of{:03d}_results.csv' --output_prefix {} "
+              "--fulco_corr_observed_subset {}".format(
+                  args.save_path.rstrip("/"), output_prefix, args.num_shards,
+                  output_prefix, args.fulco_corr_observed_subset))
+        return df_results
+
     n_full = len(df_results)
     df_corr = fulco_results_for_correlation(df_results, args.fulco_corr_observed_subset)
     n_corr = len(df_corr)
@@ -772,12 +897,6 @@ def main():
     print("Spearman correlation: {:.4f}  (p={:.2e})".format(log_spr_r, log_spr_p))
     print("=" * 80)
 
-    if args.output_prefix is None:
-        mod_tag = "_{}".format(args.modality)
-        output_prefix = "Fulco_AlphaGenome_base{}".format(mod_tag)
-    else:
-        output_prefix = args.output_prefix
-
     csv_path = os.path.join(args.save_path, "{}_results.csv".format(output_prefix))
     df_results.to_csv(csv_path, index=False)
     print("\nResults saved to: {}".format(csv_path))
@@ -801,6 +920,9 @@ def main():
         f.write("N shuffles:        {}\n".format(args.N))
         f.write("Enhancer window:   {} bp\n".format(args.enhancer_bp))
         f.write("Modality (1 bp head): {}\n".format(args.modality))
+        f.write("TTA shifts:        {} bp\n".format(list(tta_shifts)))
+        f.write("TTA reverse-comp:  {}\n".format(args.tta_rev_comp))
+        f.write("TTA passes/seq:    {}\n".format(n_passes))
         f.write("Target cell line:  {}\n".format(args.target_cell_line))
         if args.metadata_path:
             f.write("Metadata file:     {}\n".format(args.metadata_path))
