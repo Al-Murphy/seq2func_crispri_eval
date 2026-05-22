@@ -229,8 +229,8 @@ def print_fulco_correlation_line(df, observed_mode, source_label=None):
     tag = "[{}] ".format(source_label) if source_label else ""
     print(
         "{}Plot correlation (observed_mode={} → same rows as test_fulco "
-        "--fulco_corr_observed_subset={}): n={}  Pearson r={:.4f} (p={:.2e})  "
-        "Spearman rho={:.4f} (p={:.2e})".format(
+        "--fulco_corr_observed_subset={}): n={}  Pearson's r={:.4f} (p={:.2e})  "
+        "Spearman's rho={:.4f} (p={:.2e})".format(
             tag, observed_mode, bench_subset, n, pr, pp, sr, sp
         )
     )
@@ -677,14 +677,14 @@ def plot_log2_scatter_panels(
                     color=pal[1], linewidth=2.5, zorder=4)
             pr, pp = pearsonr(x_f, y_f)
             sr, sp = spearmanr(x_f, y_f)
-            stats_txt = "Pearson r = {:.3f}\nSpearman ρ = {:.3f}\nn = {:d}".format(
+            stats_txt = "Pearson's r = {:.3f}\nSpearman's rho = {:.3f}\nn = {:d}".format(
                 pr, sr, int(finite.sum()))
         else:
             stats_txt = "n = {:d}".format(int(finite.sum()))
 
         ax.text(
             0.03, 0.97, stats_txt,
-            transform=ax.transAxes, va="top", ha="left", fontsize=10,
+            transform=ax.transAxes, va="top", ha="left", fontsize=12,
             bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
                       alpha=0.85, edgecolor="none"),
         )
@@ -732,7 +732,7 @@ def plot_effect_scatter_panels(
     Points coloured by ``enh_dist`` with a shared log-scale viridis colorbar across panels.
     Y-axis is shared across panels. Predictions below ``EFFECT_SCATTER_TRUNC_Y`` (-0.1)
     are plotted as ▼ markers at the floor; the *raw* values still feed the best-fit
-    line and Pearson/Spearman r.
+    line and Pearson's r / Spearman's rho.
     """
     from matplotlib.colors import LogNorm, Normalize
 
@@ -818,13 +818,13 @@ def plot_effect_scatter_panels(
 
         pear_r = pd.Series(x).corr(pd.Series(y_raw), method="pearson")
         spear_r = pd.Series(x).corr(pd.Series(y_raw), method="spearman")
-        stats_txt = "Pearson r = {:.3f}\nSpearman r = {:.3f}\nn = {}".format(pear_r, spear_r, len(df))
+        stats_txt = "Pearson's r = {:.3f}\nSpearman's rho = {:.3f}\nn = {}".format(pear_r, spear_r, len(df))
         ax.text(
             0.03, 0.97, stats_txt,
             transform=ax.transAxes,
             va="top",
             ha="left",
-            fontsize=10,
+            fontsize=12,
             bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, edgecolor="none"),
         )
 
