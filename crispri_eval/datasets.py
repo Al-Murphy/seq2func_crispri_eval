@@ -24,6 +24,7 @@ Reference column conventions match the published SequenceModelBenchmark
 (``ziga_additional_columns.tsv``) so results are directly comparable.
 """
 
+import glob
 import json
 import os
 import time
@@ -58,9 +59,10 @@ class GasperiniDataset(torch.utils.data.Dataset):
         high_confidence_subset: bool = True,
         crispri_perturb_mode: str = "dinucleotide",
         min_enh_dist: int = 990,
+        tta_shifts=(0,),
     ):
         """
-        Data loader for Gasperini et al. CRISPRi data. 
+        Data loader for Gasperini et al. CRISPRi data.
         Parameters N and enhancer_bp match the analysys of Karrolus et al., 2023.
         
         Parameters:
@@ -120,6 +122,9 @@ class GasperiniDataset(torch.utils.data.Dataset):
         self.chr_sizes = None
         self.high_confidence_subset = high_confidence_subset
         self.min_enh_dist = int(min_enh_dist)
+        # Test-time augmentation shifts (bp); each re-fetches a real-flank window
+        # at seq_start + shift. (0,) = no shift augmentation (default).
+        self.tta_shifts = tuple(int(s) for s in tta_shifts) or (0,)
         _valid = ("dinucleotide", "shuffle_bases", "random_permute")
         if crispri_perturb_mode not in _valid:
             raise ValueError(
@@ -298,19 +303,17 @@ class GasperiniDataset(torch.utils.data.Dataset):
             return L - 1 - i_pre
         return i_pre
 
-    def __getitem__(self, idx):
-        # Initialize genome loaders if needed (per worker process)
-        self._init_genome_loaders()
-        
-        #get the data for the idx
-        data = self.crispri_data.iloc[idx]
+    def _build_window(self, data, idx, shift):
+        """Build one (WT, CRISPRi) window shifted ``shift`` bp from the TSS-centred start.
 
-        # Centred on the TSS (matching SequenceModelBenchmark / Avsec et al.);
-        # the enhancer is shuffled in place within this TSS-centred window.
+        Re-fetched from the genome at ``seq_start + shift`` so the flanks are real
+        sequence (not rolled/wrapped). Returns
+        ``(x_WT (1, L, 4), x_crispri (N, L, 4), tss_seq_index, seq_start)``.
+        """
         tss = int(data["tss_pos"])
         enh_middle = int(data["enh_middle"])
-        seq_start = tss - (self.sequence_length // 2)
         strand_i = int(data["Strand"])
+        seq_start = tss - (self.sequence_length // 2) + int(shift)
 
         seqs = self.genome.get_seq_start(
             chrom="chr" + str(data["Chromosome/scaffold name"]),
@@ -321,7 +324,6 @@ class GasperiniDataset(torch.utils.data.Dataset):
             pad_seq=True,
         ).swapaxes(1, 2).to(torch.float32)
         seqs_wt = seqs.clone()
-
         seqs = self._crispri(seqs, enh_middle, seq_start, self.enhancer_bp, pair_idx=idx)
 
         if strand_i < 1:
@@ -331,20 +333,49 @@ class GasperiniDataset(torch.utils.data.Dataset):
         tss_seq_index = self._tss_seq_index(
             tss, seq_start, strand_i, data["Chromosome/scaffold name"]
         )
+        return seqs_wt, seqs, tss_seq_index, seq_start
 
-        return {
-            "x_WT": seqs_wt,
-            "x_crispri": seqs,
+    def __getitem__(self, idx):
+        # Initialize genome loaders if needed (per worker process)
+        self._init_genome_loaders()
+
+        data = self.crispri_data.iloc[idx]
+        tss = int(data["tss_pos"])
+        enh_middle = int(data["enh_middle"])
+        strand_i = int(data["Strand"])
+
+        meta = {
             "y_delta": torch.tensor(data["Diff_expression_test_fold_change"], dtype=torch.float32),
             "gene_id": data["ENSG"],
             "gene_name": data["target_gene_short"],
             "enh_loc": data["enh_loc"],
             "tss": tss,
-            "tss_seq_index": tss_seq_index,
             "enh_middle": enh_middle,  # genomic midpoint of enhancer (offset from window centre)
             "strand": strand_i,
             "enh_dist": data["enh_dist"].item(),
         }
+
+        if self.tta_shifts == (0,):
+            seqs_wt, seqs, tss_seq_index, _ = self._build_window(data, idx, 0)
+            meta["x_WT"] = seqs_wt
+            meta["x_crispri"] = seqs
+            meta["tss_seq_index"] = tss_seq_index
+            return meta
+
+        # TTA: one real-flank window per shift, stacked along a leading shift axis.
+        wts, crs, tss_idxs, seq_starts = [], [], [], []
+        for s in self.tta_shifts:
+            wt, cr, tss_idx, ss = self._build_window(data, idx, s)
+            wts.append(wt)
+            crs.append(cr)
+            tss_idxs.append(int(tss_idx))
+            seq_starts.append(int(ss))
+        meta["x_WT"] = torch.cat(wts, dim=0)             # (S, L, 4)
+        meta["x_crispri"] = torch.stack(crs, dim=0)      # (S, N, L, 4)
+        meta["tss_seq_index"] = torch.tensor(tss_idxs, dtype=torch.long)
+        meta["seq_start"] = torch.tensor(seq_starts, dtype=torch.long)
+        meta["tta_shifts"] = torch.tensor(self.tta_shifts, dtype=torch.long)
+        return meta
 
 
 def _fulco_ensembl_lookup_symbols(symbols, genome_build="hg38"):
@@ -429,12 +460,17 @@ class FulcoDataset(torch.utils.data.Dataset):
         gene_tss_csv: Optional[str] = None,
         fraction_change_col: str = "Fraction change in gene expr",
         observed_subset: str = "all",
+        tta_shifts=(0,),
     ):
         super().__init__()
         self.data_path = data_path.rstrip("/") + "/"
         assert sequence_length % 128 == 0
         self.sequence_length = sequence_length
         self.seed = seed
+        # Test-time augmentation shifts (bp). Each shift re-fetches a window at
+        # ``seq_start + shift`` from the genome, so the flanks are real sequence
+        # (not wrapped/rolled). (0,) = no shift augmentation (default).
+        self.tta_shifts = tuple(int(s) for s in tta_shifts) or (0,)
         self.N = N
         self.enhancer_bp = enhancer_bp
         assert genome_build in ("hg38", "hg19"), "Genome build must be hg38 or hg19"
@@ -736,15 +772,19 @@ class FulcoDataset(torch.utils.data.Dataset):
             return L - 1 - i_pre
         return i_pre
 
-    def __getitem__(self, idx):
-        self._init_genome_loaders()
-        data = self.crispri_data.iloc[idx]
+    def _build_window(self, data, idx, shift):
+        """Build one (WT, CRISPRi) window shifted ``shift`` bp from the TSS-centred start.
+
+        The window is re-fetched from the genome at ``seq_start + shift``, so the
+        flanking bases are real sequence (not rolled/wrapped). Returns
+        ``(x_WT (1, L, 4), x_crispri (N, L, 4), tss_seq_index, seq_start)``.
+        """
         tss = int(data["tss_pos"])
         enh_middle = int(data["enh_middle"])
-        seq_start = tss - (self.sequence_length // 2)
         strand_i = int(data["Strand"])
-
+        seq_start = tss - (self.sequence_length // 2) + int(shift)
         chrom = "chr" + str(data["Chromosome/scaffold name"])
+
         seqs = self.genome.get_seq_start(
             chrom=chrom,
             seq_start=seq_start,
@@ -754,6 +794,7 @@ class FulcoDataset(torch.utils.data.Dataset):
             pad_seq=True,
         ).swapaxes(1, 2).to(torch.float32)
         seqs_wt = seqs.clone()
+        # _crispri locates the enhancer via (enh_middle - seq_start), so it tracks the shift.
         seqs = self._crispri(seqs, enh_middle, seq_start, self.enhancer_bp, pair_idx=idx)
 
         if strand_i < 1:
@@ -763,19 +804,46 @@ class FulcoDataset(torch.utils.data.Dataset):
         tss_seq_index = self._tss_seq_index(
             tss, seq_start, strand_i, data["Chromosome/scaffold name"]
         )
+        return seqs_wt, seqs, tss_seq_index, seq_start
 
-        return {
-            "x_WT": seqs_wt,
-            "x_crispri": seqs,
+    def __getitem__(self, idx):
+        self._init_genome_loaders()
+        data = self.crispri_data.iloc[idx]
+        tss = int(data["tss_pos"])
+        enh_middle = int(data["enh_middle"])
+        strand_i = int(data["Strand"])
+
+        meta = {
             "y_delta": torch.tensor(data["Diff_expression_test_fold_change"], dtype=torch.float32),
             "gene_id": data["ENSG"],
             "gene_name": data["target_gene_short"],
             "enh_loc": data["enh_loc"],
             "tss": tss,
-            "tss_seq_index": tss_seq_index,
             "enh_middle": enh_middle,
             "strand": strand_i,
             "enh_dist": float(data["enh_dist"]),
         }
+
+        if self.tta_shifts == (0,):
+            seqs_wt, seqs, tss_seq_index, _ = self._build_window(data, idx, 0)
+            meta["x_WT"] = seqs_wt
+            meta["x_crispri"] = seqs
+            meta["tss_seq_index"] = tss_seq_index
+            return meta
+
+        # TTA: one real-flank window per shift, stacked along a leading shift axis.
+        wts, crs, tss_idxs, seq_starts = [], [], [], []
+        for s in self.tta_shifts:
+            wt, cr, tss_idx, ss = self._build_window(data, idx, s)
+            wts.append(wt)         # (1, L, 4)
+            crs.append(cr)         # (N, L, 4)
+            tss_idxs.append(int(tss_idx))
+            seq_starts.append(int(ss))
+        meta["x_WT"] = torch.cat(wts, dim=0)             # (S, L, 4)
+        meta["x_crispri"] = torch.stack(crs, dim=0)      # (S, N, L, 4)
+        meta["tss_seq_index"] = torch.tensor(tss_idxs, dtype=torch.long)   # (S,)
+        meta["seq_start"] = torch.tensor(seq_starts, dtype=torch.long)     # (S,)
+        meta["tta_shifts"] = torch.tensor(self.tta_shifts, dtype=torch.long)
+        return meta
 
 

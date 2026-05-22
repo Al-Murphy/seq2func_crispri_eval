@@ -204,9 +204,9 @@ def parse_args():
     p.add_argument(
         "--tta_shifts", type=str, default="0",
         help=(
-            "Comma-separated bp shifts for test-time augmentation, applied by rolling "
-            "the input and shifting the readout indices in lockstep. Default '0' = no "
-            "shift. Karollus 2023 used '-43,0,43' (1/3-bin sampling for Enformer)."
+            "Comma-separated bp shifts for test-time augmentation. Each shift "
+            "re-fetches a real-flank window at seq_start+shift (no rolling/wrapping). "
+            "Default '0' = no shift. Karollus 2023 used '-43,0,43' (1/3-bin sampling for Enformer)."
         ),
     )
     p.add_argument(
@@ -524,36 +524,19 @@ def _exon_seq_indices(gene_id, exon_coords, chrom, seq_start, seq_len, strand):
     return positions.tolist()
 
 
-def _predict_base_single(
-    ag_model,
-    x,
-    organism_index,
-    track_bundle,
-    window_bp,
-    device,
-    modality="rna_seq",
-    tss_center_index=None,
-    exon_seq_idx=None,
-    tta_shifts=(0,),
-    tta_rev_comp=False,
+def _predict_one_shift(
+    ag_model, x, organism_index, track_bundle, window_bp, device,
+    modality, center_index, exon_idx, tta_rev_comp,
 ):
     """
-    Aggregate 1 bp predictions for a batch of sequences, optionally averaging over
-    test-time augmentations (TTA).
+    Forward (+ optional reverse-complement) prediction for a batch of sequences at
+    ONE shift, returning a float64 tensor of shape (B,) averaged over the orientation(s).
 
-    Augmentation set = ``tta_shifts`` × {forward} ∪ (``tta_shifts`` × {reverse-complement}
-    if ``tta_rev_comp``). The Karollus-matched setting is ``tta_shifts=(-43, 0, 43)`` +
-    ``tta_rev_comp=True`` → 6 forward passes per sequence, averaged. The default
-    ``tta_shifts=(0,)``, ``tta_rev_comp=False`` is a single forward pass (no TTA).
-
-    Each augmentation is applied to the one-hot tensor directly (no genome re-fetch):
-      * shift ``s``: ``torch.roll(x, s, dim=1)`` and shift the readout indices by ``s``
-        (the far edges wrap ~500 kb from the TSS — negligible for the central readout);
-      * reverse-complement: ``torch.flip(x, [1, 2])``, read the **minus-strand** tracks
-        at flipped indices ``L-1-idx``.
-
-    ``track_bundle`` is the {"plus", "minus", "all"} dict from
-    ``get_alphagenome_track_indices`` (forward passes use ``plus``, RC passes use ``minus``).
+    The shift itself is baked into ``x`` by the dataset (each shift is a real-flank
+    window re-fetched at ``seq_start + shift``; no rolling), and ``center_index`` /
+    ``exon_idx`` are that shift's readout indices. The reverse-complement augmentation
+    is a tensor flip here: ``torch.flip(x, [1, 2])`` read on the **minus-strand**
+    tracks at flipped indices ``L-1-idx``.
     """
     L = x.shape[1]
     if isinstance(track_bundle, dict):
@@ -562,37 +545,25 @@ def _predict_base_single(
     else:  # plain list (strand-unaware) — same indices for both orientations
         plus_inds = minus_inds = track_bundle
 
-    orients = [("fw", plus_inds)]
+    sig = _forward_once(ag_model, x, organism_index, plus_inds, device, modality)
+    acc = torch.tensor(
+        _aggregate_sig(sig, modality, window_bp, center_index, exon_idx), dtype=torch.float64
+    )
+    n = 1
+
     if tta_rev_comp:
-        orients.append(("rc", minus_inds))
+        x_rc = torch.flip(x, dims=[1, 2])
+        rc_center = None if center_index is None else (L - 1) - int(center_index)
+        rc_exon = (
+            [min(L - 1, max(0, (L - 1) - e)) for e in exon_idx] if exon_idx else exon_idx
+        )
+        sig = _forward_once(ag_model, x_rc, organism_index, minus_inds, device, modality)
+        acc = acc + torch.tensor(
+            _aggregate_sig(sig, modality, window_bp, rc_center, rc_exon), dtype=torch.float64
+        )
+        n += 1
 
-    acc = None
-    n_aug = 0
-    for s in tta_shifts:
-        s = int(s)
-        x_sh = x if s == 0 else torch.roll(x, shifts=s, dims=1)
-        for orient, inds in orients:
-            if orient == "fw":
-                x_var = x_sh
-                aug_exon = (
-                    [min(L - 1, max(0, e + s)) for e in exon_seq_idx] if exon_seq_idx else exon_seq_idx
-                )
-                aug_center = None if tss_center_index is None else tss_center_index + s
-            else:  # rc: shift first (in genomic window terms), then reverse-complement
-                x_var = torch.flip(x_sh, dims=[1, 2])
-                aug_exon = (
-                    [min(L - 1, max(0, (L - 1) - (e + s))) for e in exon_seq_idx]
-                    if exon_seq_idx else exon_seq_idx
-                )
-                aug_center = None if tss_center_index is None else (L - 1) - (tss_center_index + s)
-
-            sig = _forward_once(ag_model, x_var, organism_index, inds, device, modality)
-            scores = _aggregate_sig(sig, modality, window_bp, aug_center, aug_exon)
-            scores_t = torch.tensor(scores, dtype=torch.float64)
-            acc = scores_t if acc is None else acc + scores_t
-            n_aug += 1
-
-    return (acc / n_aug).tolist()
+    return acc / n
 
 
 # ---------------------------------------------------------------------------
@@ -614,6 +585,15 @@ def main():
     effective_window_bp = (
         ENFORMER_TSS_WINDOW_BP if args.modality == "cage" else args.window_bp
     )
+
+    # ---- Test-time augmentation config --------------------------------------
+    tta_shifts = tuple(int(s) for s in args.tta_shifts.split(",") if str(s).strip())
+    if not tta_shifts:
+        tta_shifts = (0,)
+    n_passes = len(tta_shifts) * (2 if args.tta_rev_comp else 1)
+    if n_passes > 1:
+        print("Test-time augmentation: shifts={} bp (real-flank windows), rev_comp={} "
+              "→ {} forward passes/seq".format(list(tta_shifts), args.tta_rev_comp, n_passes))
 
     # ---- Track selection -----------------------------------------------------
     n_expected = AG_HUMAN_1BP_NUM_TRACKS[args.modality]
@@ -651,17 +631,8 @@ def main():
         min_enh_dist=args.min_enh_dist,
         gene_tss_csv=args.gene_tss_csv,
         observed_subset=args.fulco_corr_observed_subset,
+        tta_shifts=tta_shifts,
     )
-
-    # ---- Test-time augmentation config --------------------------------------
-    tta_shifts = tuple(int(s) for s in args.tta_shifts.split(",") if str(s).strip())
-    if not tta_shifts:
-        tta_shifts = (0,)
-    n_passes = len(tta_shifts) * (2 if args.tta_rev_comp else 1)
-    if n_passes > 1:
-        print("Test-time augmentation: shifts={} bp, rev_comp={} → {} forward passes/seq".format(
-            list(tta_shifts), args.tta_rev_comp, n_passes
-        ))
 
     # ---- Shard the pairs (for SLURM array parallelisation) ------------------
     if args.num_shards > 1:
@@ -728,57 +699,65 @@ def main():
         if batch is None:
             continue
 
-        x_wt = batch["x_WT"]
-        x_crispri = batch["x_crispri"]
-
         y_delta = (1.0 - batch["y_delta"]).item()
         strand_i = int(batch["strand"].item()) if torch.is_tensor(batch["strand"]) else int(batch["strand"])
-        # Sequences for minus-strand genes are reverse-complemented in FulcoDataset,
-        # so the gene is always in the "plus" orientation from the model's view.
-        strand_key = "plus"
-        cur_track_inds = track_inds[strand_key] if isinstance(track_inds, dict) else track_inds
+        cur_track_inds = track_inds["plus"] if isinstance(track_inds, dict) else track_inds
         if isinstance(track_inds, dict):
             cur_track_count_plus = len(track_inds.get("plus", []))
             cur_track_count_minus = len(track_inds.get("minus", []))
         else:
             cur_track_count_plus = len(cur_track_inds)
             cur_track_count_minus = len(cur_track_inds)
-        tss_idx = _tss_seq_index_from_batch(batch)
 
-        _cur_exon_idx = None
-        if exon_coords is not None and args.modality == "rna_seq":
-            gene_id = batch["gene_id"]
-            seq_start = int(batch["tss"]) - AG_SEQ_LEN // 2
-            chrom_val = (
-                batch["enh_loc"].split(":")[0]
-                if isinstance(batch["enh_loc"], str) else str(batch["enh_loc"])
+        # Normalise the batch into a list of per-shift views. The dataset stacks
+        # real-flank windows along a leading shift axis when TTA shifts are set;
+        # otherwise it returns a single window (legacy shape).
+        if "seq_start" in batch and len(tta_shifts) > 1:
+            S = batch["x_WT"].shape[0]
+            shift_wt = [batch["x_WT"][s : s + 1] for s in range(S)]   # each (1, L, 4)
+            shift_cr = [batch["x_crispri"][s] for s in range(S)]      # each (N, L, 4)
+            shift_tss = [int(batch["tss_seq_index"][s]) for s in range(S)]
+            shift_seqstart = [int(batch["seq_start"][s]) for s in range(S)]
+        else:
+            shift_wt = [batch["x_WT"]]
+            shift_cr = [batch["x_crispri"]]
+            shift_tss = [_tss_seq_index_from_batch(batch)]
+            shift_seqstart = [int(batch["tss"]) - AG_SEQ_LEN // 2]
+
+        # Per-shift exon readout indices (computed from each shift's window start).
+        chrom_val = (
+            batch["enh_loc"].split(":")[0]
+            if isinstance(batch["enh_loc"], str) else str(batch["enh_loc"])
+        )
+        gene_id = batch["gene_id"]
+        shift_exon = []
+        for ss in shift_seqstart:
+            if exon_coords is not None and args.modality == "rna_seq":
+                shift_exon.append(
+                    _exon_seq_indices(gene_id, exon_coords, chrom_val, ss, AG_SEQ_LEN, strand_i)
+                )
+            else:
+                shift_exon.append(None)
+
+        def _one_shift(x_batch, s_i):
+            return _predict_one_shift(
+                model, x_batch, args.organism_index, track_inds,
+                effective_window_bp, device, args.modality,
+                shift_tss[s_i], shift_exon[s_i], args.tta_rev_comp,
             )
-            _cur_exon_idx = _exon_seq_indices(
-                gene_id, exon_coords, chrom_val, seq_start, AG_SEQ_LEN, strand_i
-            )
 
-        def _predict_batch(x_batch):
-            return _predict_base_single(
-                model,
-                x_batch,
-                args.organism_index,
-                track_inds,  # full {plus/minus/all} bundle (RC TTA reads minus tracks)
-                effective_window_bp,
-                device,
-                modality=args.modality,
-                tss_center_index=tss_idx,
-                exon_seq_idx=_cur_exon_idx,
-                tta_shifts=tta_shifts,
-                tta_rev_comp=args.tta_rev_comp,
-            )
+        # WT: average over shifts (each already averaged over fw/rc inside _one_shift).
+        wt_vals = [float(_one_shift(shift_wt[s_i], s_i)[0]) for s_i in range(len(shift_wt))]
+        pred_wt = sum(wt_vals) / len(wt_vals)
 
-        pred_wt = _predict_batch(x_wt)[0]
-
+        # CRISPRi: pool over shifts × shuffles (independent shuffles per shift; the
+        # mean is an unbiased estimate of E[pred | shuffled enhancer]).
         pred_crispri_list = []
         bs = args.shuffle_batch_size
-        for i in range(0, x_crispri.shape[0], bs):
-            xi_batch = x_crispri[i : i + bs]
-            pred_crispri_list.extend(_predict_batch(xi_batch))
+        for s_i in range(len(shift_cr)):
+            xcr = shift_cr[s_i]  # (N, L, 4)
+            for i in range(0, xcr.shape[0], bs):
+                pred_crispri_list.extend(_one_shift(xcr[i : i + bs], s_i).tolist())
 
         pred_crispri_mean = sum(pred_crispri_list) / len(pred_crispri_list)
         pred_crispri_std = float(np.std(pred_crispri_list))
@@ -797,8 +776,8 @@ def main():
         all_enh_locs.append(batch["enh_loc"])
         all_tss.append(batch["tss"])
         all_strands.append(batch["strand"])
-        all_tss_seq_index.append(tss_idx)
-        all_debug_exon_bp.append(len(_cur_exon_idx) if _cur_exon_idx else 0)
+        all_tss_seq_index.append(shift_tss[0])
+        all_debug_exon_bp.append(len(shift_exon[0]) if shift_exon[0] else 0)
         all_debug_track_count.append(len(cur_track_inds))
         all_debug_track_count_plus.append(cur_track_count_plus)
         all_debug_track_count_minus.append(cur_track_count_minus)

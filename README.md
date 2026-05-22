@@ -148,10 +148,15 @@ combined-model plots `./results/plots/{fulco,gasperini}_all_models.png`.
 
 The AlphaGenome scripts support test-time augmentation (TTA) matching Karollus
 et al. 2023: average the prediction over **3 sequence shifts** (`−43, 0, +43`
-bp) **× forward + reverse-complement** = 6 forward passes per sequence. Shifts
-are applied by rolling the one-hot input (readout indices shift in lockstep);
+bp) **× forward + reverse-complement** = 6 forward passes per sequence. Each
+shift re-fetches a window at `seq_start + shift` from the genome, so the
+flanking bases are **real sequence** (not rolled/wrapped from the far edge);
 the reverse-complement pass flips the sequence and reads the **minus-strand**
 RNA-Seq tracks at flipped positions.
+
+> Note: shuffles are drawn independently per shift rather than shared across
+> shifts (as in Karollus). For the per-pair *mean* prediction this is an
+> unbiased estimate of the same quantity, so it does not bias the correlation.
 
 ```bash
 python scripts/test_fulco_alphagenome.py \

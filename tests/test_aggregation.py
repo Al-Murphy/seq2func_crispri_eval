@@ -122,16 +122,26 @@ def test_ntv3_onehot_n_position_becomes_n_token():
 
 
 # ---------------------------------------------------------------------------
-# AlphaGenome: _aggregate_rna, _exon_seq_indices
+# AlphaGenome: _aggregate_sig, _exon_seq_indices
 # ---------------------------------------------------------------------------
 
-def test_alphagenome_aggregate_rna():
+def test_alphagenome_aggregate_sig_window():
     mod = load_script("test_fulco_alphagenome")
     sig = torch.ones(3, 100, 5)
-    out = mod._aggregate_rna(sig)
-    # 100 bp × 5 tracks
+    # No exon mask → sum over a TSS-centred window of selected tracks.
+    # window_bp >= 100 centred at 50 covers all 100 positions × 5 tracks = 500.
+    out = mod._aggregate_sig(sig, "rna_seq", window_bp=200, center_index=50, exon_idx=None)
     assert len(out) == 3
     assert all(v == pytest.approx(500.0) for v in out)
+
+
+def test_alphagenome_aggregate_sig_exon_mean():
+    mod = load_script("test_fulco_alphagenome")
+    # value == position index over 5 tracks; exon-mean of positions 10..14 = 12
+    pos = torch.arange(100, dtype=torch.float32).view(1, 100, 1).expand(1, 100, 5).clone()
+    out = mod._aggregate_sig(pos, "rna_seq", window_bp=0, center_index=None,
+                             exon_idx=[10, 11, 12, 13, 14])
+    assert out[0] == pytest.approx(12.0)
 
 
 def test_alphagenome_exon_indices_overlap_plus_strand():
