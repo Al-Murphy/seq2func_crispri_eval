@@ -134,14 +134,14 @@ def parse_args():
         help=(
             "Comma-separated bp shifts for test-time augmentation. Each shift "
             "re-fetches a real-flank window at seq_start+shift (no rolling/wrapping). "
-            "Default '0' = no shift. Karollus 2023 used '-43,0,43'."
+            "Default '0' = no shift. Karollus matched: --tta_shifts=-43,0,43 (use '=' so the leading minus is not parsed as a flag)."
         ),
     )
     p.add_argument(
         "--tta_rev_comp", action="store_true",
         help=(
             "Add reverse-complement passes to TTA (flip the sequence, read minus-strand "
-            "RNA-Seq tracks at flipped positions). With --tta_shifts -43,0,43 this gives "
+            "RNA-Seq tracks at flipped positions). With --tta_shifts=-43,0,43 this gives "
             "the 6-pass Karollus-matched augmentation."
         ),
     )

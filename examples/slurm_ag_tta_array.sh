@@ -28,8 +28,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:h100:1
 #SBATCH --mem=96G
-#SBATCH --partition=gpuq
-#SBATCH --qos=bio_ai
+#SBATCH --partition=
+#SBATCH --qos=
 #SBATCH --array=0-7        # NUM_SHARDS - 1  (8 shards here)
 
 set -euo pipefail
@@ -50,7 +50,7 @@ SAVE_PATH="./results/test_${DATASET^}_alphagenome_tta/"
 
 python scripts/test_${DATASET}_alphagenome.py \
     --modality rna_seq \
-    --tta_shifts -43,0,43 \
+    --tta_shifts=-43,0,43 \
     --tta_rev_comp \
     --num_shards "${NUM_SHARDS}" \
     --shard_idx "${SLURM_ARRAY_TASK_ID}" \

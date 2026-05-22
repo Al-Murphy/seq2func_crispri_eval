@@ -160,7 +160,7 @@ RNA-Seq tracks at flipped positions.
 
 ```bash
 python scripts/test_fulco_alphagenome.py \
-    --modality rna_seq --tta_shifts -43,0,43 --tta_rev_comp
+    --modality rna_seq --tta_shifts=-43,0,43 --tta_rev_comp
 ```
 
 `--tta_shifts 0` (default) + no `--tta_rev_comp` is a single forward pass (no
@@ -170,7 +170,7 @@ AlphaGenome model it is best run sharded on a cluster:
 ```bash
 # Each array task processes pairs[shard_idx::num_shards] and writes a shard CSV.
 python scripts/test_fulco_alphagenome.py \
-    --modality rna_seq --tta_shifts -43,0,43 --tta_rev_comp \
+    --modality rna_seq --tta_shifts=-43,0,43 --tta_rev_comp \
     --num_shards 8 --shard_idx $SLURM_ARRAY_TASK_ID \
     --save_path ./results/test_Fulco_alphagenome_tta/
 
