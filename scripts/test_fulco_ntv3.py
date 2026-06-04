@@ -11,17 +11,22 @@ DNA up to 1 Mb in length and returns ``bigwig_tracks_logits`` cropped to the
 middle 37.5 % of the input window (1 bp resolution).
 
 For the BASE model:
-  - K562 tracks default to the IDs called out in the official NTv3 demo
-    notebook (InstaDeepAI/ntv3 Space, ``05_model_interpretation.ipynb``):
-        RNA-Seq    -> ENCSR056HPM
-        CAGE       -> CNhs11250_P, CNhs11250_M (strand pair)
+  - K562 RNA-Seq / CAGE default to the full set of K562 tracks NTv3 shares with
+    Borzoi's targets_human.txt panel (RNA-Seq: 86 track columns from 67
+    accessions; CAGE: CNhs11250 + CNhs12334 strand pairs = 4 columns). DNase /
+    GATA1 default to the single IDs from the official NTv3 demo notebook
+    (InstaDeepAI/ntv3 Space, ``05_model_interpretation.ipynb``):
+        RNA-Seq    -> 86 K562 tracks shared with Borzoi
+        CAGE       -> CNhs11250 + CNhs12334 strand pairs (4 tracks)
         DNase      -> ENCSR921NMD
         GATA1 ChIP -> ENCSR000EFT
     Override these with ``--track_names``, ``--track_names_csv``, or
-    ``--track_indices``. Pass ``--use_borzoi_xref`` to instead aggregate every
-    K562 RNA-Seq / CAGE Borzoi track that overlaps with NTv3's track list
-    (~48 RNA-Seq ENCSRs matched).
-  - Signal is summed over a TSS-centred bp window and selected K562 tracks.
+    ``--track_indices``. ``--use_borzoi_xref`` reproduces the RNA-Seq / CAGE
+    defaults by cross-referencing Borzoi's track list at runtime.
+  - CAGE / DNase / GATA1: signal summed over a TSS-centred bp window and the
+    selected K562 tracks (Borzoi-style track-sum). RNA-Seq: AlphaGenome-style
+    exon aggregation -- mean over GENCODE exon bp (mapped into NTv3's central
+    output crop), then mean over tracks (see --exon_csv).
   - Experimental labels match Enformer/AlphaGenome/Borzoi:
     ``y_delta = 1 - expr_ratio`` (higher = stronger repression vs WT).
   - IMPORTANT: NTv3's ``bigwig_tracks_logits`` field name is misleading. Per
@@ -72,6 +77,8 @@ import math
 import os
 import re
 import warnings
+import json
+import urllib.request as _urlreq
 
 import numpy as np
 import pandas as pd
@@ -103,9 +110,45 @@ NTV3_N_TOKEN_ID = 10
 # K562 track IDs from the InstaDeepAI/ntv3 demo notebook
 # (Space: notebooks_tutorials/05_model_interpretation.ipynb).
 # Verified present in cfg.bigwigs_per_species["human"] for NTv3_650M_post.
+# K562 RNA-Seq default: the K562 RNA accessions NTv3 shares with Borzoi's
+# targets_human.txt panel (67 of Borzoi's 71 unique K562 RNA accessions ->
+# 86 NTv3 track columns after _P/_M strand expansion). NTv3 was post-trained on
+# Borzoi's track set, so this reproduces Borzoi's K562 RNA panel. Predictions are
+# SUMMED over these tracks (see _aggregate), matching Borzoi's track-sum
+# convention. Generated via the Borzoi xref
+# (see --use_borzoi_xref); override with --track_names for a single track.
+K562_RNA_TRACKS = [
+    'ENCSR000AEL_M', 'ENCSR000AEL_P', 'ENCSR000AEM_M', 'ENCSR000AEM_P',
+    'ENCSR000AEN_M', 'ENCSR000AEN_P', 'ENCSR000AEP', 'ENCSR000AEQ',
+    'ENCSR000CPY_M', 'ENCSR000CPY_P', 'ENCSR000CPZ_M', 'ENCSR000CPZ_P',
+    'ENCSR000CQA_M', 'ENCSR000CQA_P', 'ENCSR000CWG', 'ENCSR000CWH',
+    'ENCSR000CWI', 'ENCSR000CWJ', 'ENCSR000EYO', 'ENCSR006EBD',
+    'ENCSR038WEK_M', 'ENCSR038WEK_P', 'ENCSR040YBR_M', 'ENCSR040YBR_P',
+    'ENCSR056HPM', 'ENCSR062FHL', 'ENCSR100JNS', 'ENCSR100VUY',
+    'ENCSR105NQB', 'ENCSR109IQO_M', 'ENCSR109IQO_P', 'ENCSR114LNC',
+    'ENCSR115PIZ', 'ENCSR124KOZ', 'ENCSR161RSX', 'ENCSR165EQJ',
+    'ENCSR195JRH', 'ENCSR206KFV', 'ENCSR223DWL', 'ENCSR264IXQ',
+    'ENCSR287DHQ', 'ENCSR303IRE', 'ENCSR325BJP', 'ENCSR340QZY',
+    'ENCSR369MDF', 'ENCSR379BAF', 'ENCSR384ZXD_M', 'ENCSR384ZXD_P',
+    'ENCSR451LDB', 'ENCSR492KRY', 'ENCSR518BSQ', 'ENCSR530NHO_M',
+    'ENCSR530NHO_P', 'ENCSR563ZWI', 'ENCSR594NJP_M', 'ENCSR594NJP_P',
+    'ENCSR596ACL_M', 'ENCSR596ACL_P', 'ENCSR601DZY', 'ENCSR615EEK_M',
+    'ENCSR615EEK_P', 'ENCSR637VLS_M', 'ENCSR637VLS_P', 'ENCSR672NDZ',
+    'ENCSR689NPY', 'ENCSR693JOK', 'ENCSR696YIB_M', 'ENCSR696YIB_P',
+    'ENCSR733QST', 'ENCSR738ZHN', 'ENCSR758BAT', 'ENCSR792OIJ_M',
+    'ENCSR792OIJ_P', 'ENCSR806HCA', 'ENCSR810ZKJ', 'ENCSR844RSF',
+    'ENCSR860DWK_M', 'ENCSR860DWK_P', 'ENCSR866UOA', 'ENCSR882NWV',
+    'ENCSR885DVH_M', 'ENCSR885DVH_P', 'ENCSR900IJI', 'ENCSR949BBZ',
+    'ENCSR950YTM', 'ENCSR957GVE',
+]
+
+# K562 CAGE default: both K562 CAGE strand pairs (CNhs11250 + CNhs12334),
+# matching Borzoi's 4 K562 CAGE tracks.
+K562_CAGE_TRACKS = ['CNhs11250_P', 'CNhs11250_M', 'CNhs12334_P', 'CNhs12334_M']
+
 K562_DEMO_TRACKS = {
-    "RNA":   ["ENCSR056HPM"],
-    "CAGE":  ["CNhs11250_P", "CNhs11250_M"],
+    "RNA":   K562_RNA_TRACKS,
+    "CAGE":  K562_CAGE_TRACKS,
     "DNase": ["ENCSR921NMD"],
     "GATA1": ["ENCSR000EFT"],
 }
@@ -176,7 +219,7 @@ def parse_args():
         choices=["RNA", "CAGE", "DNase", "GATA1"],
         help=(
             "Pick the canonical K562 track set from the InstaDeepAI/ntv3 demo "
-            "notebook. RNA -> ENCSR056HPM; CAGE -> CNhs11250_P + CNhs11250_M; "
+            "notebook. RNA -> 86 K562 tracks shared with Borzoi; CAGE -> CNhs11250 + CNhs12334 (4 tracks); "
             "DNase -> ENCSR921NMD; GATA1 -> ENCSR000EFT. Override with "
             "--track_names / --track_names_csv / --track_indices / --use_borzoi_xref."
         ),
@@ -356,6 +399,18 @@ def parse_args():
         help="Output directory.",
     )
     p.add_argument("--output_prefix", type=str, default=None)
+    p.add_argument(
+        "--exon_csv",
+        type=str,
+        default="./metadata/Fulco_gene_exons_hg38.csv",
+        help=(
+            "CSV of GENCODE exon intervals [gene_id, chrom, start, end] (0-based "
+            "half-open) for RNA-Seq exon aggregation: mean over exon bp, then over "
+            "tracks (AlphaGenome-style), with exon positions mapped into NTv3's "
+            "central output crop. Auto-fetched via Ensembl REST if absent. Pass "
+            "'none' to fall back to the TSS-centred --window_bp sum. RNA only."
+        ),
+    )
     p.add_argument(
         "--debug_export",
         action="store_true",
@@ -571,16 +626,21 @@ def _autocast_ctx(device, autocast_dtype):
     return torch.amp.autocast(device_type="cuda", dtype=dtype)
 
 
-def _aggregate(pred, track_inds, tss_output_idx, window_bp, apply_softplus):
+def _aggregate(pred, track_inds, tss_output_idx, window_bp, apply_softplus, exon_out=None):
     """
     Aggregate NTv3 bigwig_tracks_logits (B, L_pred, T) over the selected
     tracks and a TSS-centred ``window_bp`` window.
 
-    Returns list[float] of length B (sum over tracks and bp).
+    Returns list[float] of length B (sum over the bp window and tracks).
     """
     sig = pred[:, :, track_inds]          # (B, L_pred, n_tracks)
     if apply_softplus:
         sig = torch.nn.functional.softplus(sig)
+    if exon_out:
+        # RNA-Seq exon aggregation (AlphaGenome-style): mean over exon bp, then
+        # over tracks. ``exon_out`` are NTv3 output-crop indices (already mapped).
+        idx = torch.as_tensor(exon_out, dtype=torch.long, device=sig.device)
+        return sig[:, idx, :].mean(dim=1).mean(dim=1).float().tolist()
     L_pred = sig.shape[1]
     half_lo = window_bp // 2
     half_hi = window_bp - half_lo
@@ -591,7 +651,8 @@ def _aggregate(pred, track_inds, tss_output_idx, window_bp, apply_softplus):
 
 
 def _predict(model, species_ids_template, x_onehot, track_inds_tensor,
-             tss_output_idx, window_bp, apply_softplus, device, autocast_dtype):
+             tss_output_idx, window_bp, apply_softplus, device, autocast_dtype,
+             exon_out=None):
     """Forward x through NTv3 and aggregate to a scalar per batch row.
 
     ``species_ids_template`` is a 1-D long tensor of shape (1,); the model
@@ -604,7 +665,111 @@ def _predict(model, species_ids_template, x_onehot, track_inds_tensor,
     with torch.no_grad(), _autocast_ctx(device, autocast_dtype):
         out = model(input_ids=tokens, species_ids=species_ids)
         pred = out["bigwig_tracks_logits"]                       # (B, L_pred, T)
-    return _aggregate(pred, track_inds_tensor, tss_output_idx, window_bp, apply_softplus)
+    return _aggregate(pred, track_inds_tensor, tss_output_idx, window_bp,
+                      apply_softplus, exon_out=exon_out)
+
+
+# ---------------------------------------------------------------------------
+# Exon annotation helpers (AlphaGenome-style RNA-Seq scoring, NTv3 crop-mapped)
+# ---------------------------------------------------------------------------
+
+def _fetch_exons_from_ensembl(gene_ids, genome_build="hg38"):
+    """Fetch exon intervals from the Ensembl REST API.
+
+    Returns dict: {ensg_id: [(chrom_str, start_0based, end_excl), ...]}.
+    """
+    server = (
+        "https://rest.ensembl.org" if genome_build == "hg38"
+        else "https://grch37.rest.ensembl.org"
+    )
+    result = {}
+    for gid in gene_ids:
+        url = "{}/overlap/id/{}?feature=exon;content-type=application/json".format(server, gid)
+        try:
+            req = _urlreq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with _urlreq.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            exons = list({
+                (str(e.get("seq_region_name", "")), int(e["start"]) - 1, int(e["end"]))
+                for e in data
+                if "start" in e and "end" in e
+            })
+            result[gid] = exons
+        except Exception as exc:
+            warnings.warn("Could not fetch exons for {}: {}".format(gid, exc))
+            result[gid] = []
+    return result
+
+
+def fetch_or_load_exon_coords(gene_ids, genome_build="hg38", cache_csv=None):
+    """Return dict {ensg_id: [(chrom, start_0based, end_excl), ...]} or None.
+
+    Loads from *cache_csv* when present (filling any missing genes via the
+    Ensembl REST API), otherwise fetches all genes and saves to *cache_csv*.
+    Cache format matches the AlphaGenome scripts, so the same
+    ``*_gene_exons_hg38.csv`` files are reused.
+    """
+    if cache_csv is None or str(cache_csv).strip().lower() == "none":
+        return None
+
+    if os.path.exists(cache_csv):
+        print("Loading exon cache: {}".format(cache_csv))
+        df = pd.read_csv(cache_csv)
+        result = {}
+        for gid, grp in df.groupby("gene_id"):
+            result[gid] = list(zip(grp["chrom"], grp["start"].astype(int), grp["end"].astype(int)))
+        missing = set(gene_ids) - set(result.keys())
+        if missing:
+            warnings.warn(
+                "{} genes missing from exon cache; fetching from Ensembl: {}{}".format(
+                    len(missing), list(missing)[:3], " ..." if len(missing) > 3 else ""))
+            result.update(_fetch_exons_from_ensembl(missing, genome_build))
+            _save_exon_cache(result, cache_csv)
+        return result
+
+    print("Fetching exon annotations from Ensembl REST API ({} genes)...".format(len(gene_ids)))
+    result = _fetch_exons_from_ensembl(list(gene_ids), genome_build)
+    print("Saving exon cache to: {}".format(cache_csv))
+    _save_exon_cache(result, cache_csv)
+    return result
+
+
+def _save_exon_cache(exon_coords, cache_csv):
+    rows = []
+    for gid, intervals in exon_coords.items():
+        for chrom, start, end in intervals:
+            rows.append({"gene_id": gid, "chrom": chrom, "start": start, "end": end})
+    pd.DataFrame(rows).to_csv(cache_csv, index=False)
+
+
+def _exon_seq_indices(gene_id, exon_coords, chrom, seq_start, seq_len, strand):
+    """Map GENCODE exon intervals to 0-based positions in the one-hot tensor.
+
+    Shared verbatim with the AlphaGenome scripts: minus-strand sequences are
+    reverse-complemented by the dataset, so positions are flipped for strand < 1.
+    Returns input-space positions (0..seq_len-1); NTv3 callers then shift these
+    into the middle-37.5% output crop.
+    """
+    gene_exons = exon_coords.get(gene_id, [])
+    if not gene_exons:
+        return []
+    chrom_str = str(chrom).lstrip("chr")
+    seq_end = seq_start + seq_len
+    parts = []
+    for ex_chrom, ex_start, ex_end in gene_exons:
+        if str(ex_chrom).lstrip("chr") != chrom_str:
+            continue
+        lo = max(ex_start, seq_start) - seq_start
+        hi = min(ex_end, seq_end) - seq_start
+        if lo < hi:
+            parts.append(np.arange(lo, hi, dtype=np.int32))
+    if not parts:
+        return []
+    positions = np.unique(np.concatenate(parts))
+    if strand < 1:                       # dataset RC's the minus strand
+        positions = seq_len - 1 - positions
+    return positions.tolist()
+
 
 
 # ---------------------------------------------------------------------------
@@ -678,6 +843,26 @@ def main():
                 "No Fulco pairs found for gene '{}'.".format(args.gene)
             )
 
+    # ---- Exon annotations (RNA-Seq exon aggregation) --------------------
+    exon_coords = None
+    if args.target_assay == "RNA":
+        exon_csv = (
+            None if str(getattr(args, "exon_csv", "none")).strip().lower() == "none"
+            else args.exon_csv
+        )
+        if exon_csv is not None:
+            gene_ids = dataset.crispri_data["ENSG"].unique().tolist()
+            exon_coords = fetch_or_load_exon_coords(
+                gene_ids, genome_build=args.genome_build, cache_csv=exon_csv,
+            )
+            if exon_coords is not None:
+                n_cov = sum(1 for g in gene_ids if exon_coords.get(g))
+                print("Exon coords loaded for {}/{} genes (RNA-Seq exon aggregation).".format(
+                    n_cov, len(gene_ids)))
+    # NTv3 output-crop offsets (exon input-space positions are shifted into this crop).
+    _pred_offset = int(NTV3_SEQ_LEN * NTV3_PRED_OFFSET_FRACTION)
+    _pred_len = int(NTV3_SEQ_LEN * NTV3_PRED_CENTER_FRACTION)
+
     dataloader = DataLoader(
         dataset,
         shuffle=False,
@@ -710,15 +895,16 @@ def main():
     all_tss_seq_index = []
     all_tss_output_index = []
     all_debug_track_count = []
+    all_debug_exon_bp = []
     all_debug_crispri_std = []
     all_debug_crispri_min = []
     all_debug_crispri_max = []
 
-    def _predict_batch(x_batch, tss_output_idx):
+    def _predict_batch(x_batch, tss_output_idx, exon_out=None):
         return _predict(
             model, species_ids, x_batch, track_inds_tensor,
             tss_output_idx, args.window_bp, args.apply_softplus,
-            device, args.autocast_dtype,
+            device, args.autocast_dtype, exon_out=exon_out,
         )
 
     for batch in tqdm(dataloader, total=len(dataloader)):
@@ -733,12 +919,29 @@ def main():
         tss_seq_idx = _tss_seq_index_from_batch(batch)
         tss_output_idx, _ = _tss_output_index(tss_seq_idx, seq_len=NTV3_SEQ_LEN)
 
-        pred_wt = _predict_batch(x_wt, tss_output_idx)[0]
+        # RNA-Seq: map this gene's GENCODE exons into NTv3's output crop.
+        exon_out = None
+        if exon_coords is not None:
+            tss_i = int(batch["tss"].item()) if torch.is_tensor(batch["tss"]) else int(batch["tss"])
+            strand_i = int(batch["strand"].item()) if torch.is_tensor(batch["strand"]) else int(batch["strand"])
+            chrom_v = (
+                batch["enh_loc"].split(":")[0]
+                if isinstance(batch["enh_loc"], str) else str(batch["enh_loc"])
+            )
+            seq_start = tss_i - NTV3_SEQ_LEN // 2
+            exon_in = _exon_seq_indices(
+                batch["gene_id"], exon_coords, chrom_v, seq_start, NTV3_SEQ_LEN, strand_i
+            )
+            exon_out = [p - _pred_offset for p in exon_in if 0 <= p - _pred_offset < _pred_len]
+            if not exon_out:
+                exon_out = None  # no exon bp landed in the crop -> TSS-window fallback
+
+        pred_wt = _predict_batch(x_wt, tss_output_idx, exon_out)[0]
 
         pred_crispri_list = []
         bs = max(1, int(args.shuffle_batch_size))
         for i in range(0, x_crispri.shape[0], bs):
-            pred_crispri_list.extend(_predict_batch(x_crispri[i : i + bs], tss_output_idx))
+            pred_crispri_list.extend(_predict_batch(x_crispri[i : i + bs], tss_output_idx, exon_out))
 
         pred_crispri_mean = sum(pred_crispri_list) / len(pred_crispri_list)
         pred_crispri_std = float(np.std(pred_crispri_list))
@@ -769,6 +972,7 @@ def main():
         all_tss_seq_index.append(tss_seq_idx)
         all_tss_output_index.append(tss_output_idx)
         all_debug_track_count.append(len(track_inds))
+        all_debug_exon_bp.append(len(exon_out) if exon_out else 0)
         all_debug_crispri_std.append(pred_crispri_std)
         all_debug_crispri_min.append(pred_crispri_min)
         all_debug_crispri_max.append(pred_crispri_max)
@@ -795,6 +999,7 @@ def main():
     })
     if args.debug_export:
         df_results["debug_track_count_used"] = all_debug_track_count
+        df_results["debug_exon_bp"] = all_debug_exon_bp
         df_results["debug_crispri_std"] = all_debug_crispri_std
         df_results["debug_crispri_min"] = all_debug_crispri_min
         df_results["debug_crispri_max"] = all_debug_crispri_max
