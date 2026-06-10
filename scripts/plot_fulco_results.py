@@ -76,7 +76,26 @@ Usage:
         --max_width_subplots 4 \
         --observed_mode decrease_only \
         --output ./results/test_Fulco_alphagenome/plots/fulco_enf_borzoi_ntv3_ag.png
-        
+
+    # Borzoi as a 4-fold ensemble (replicates 0-3 averaged). First build the
+    # ensemble result CSV from the per-fold runs with make_borzoi_ensemble.py:
+    #   python scripts/make_borzoi_ensemble.py \
+    #     --inputs ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_results.csv \
+    #              ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_rep1_results.csv \
+    #              ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_rep2_results.csv \
+    #              ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_rep3_results.csv \
+    #     --output ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_ensemble_results.csv
+    # then pass the ensemble CSV as the single Borzoi panel:
+    python scripts/plot_fulco_results.py \
+        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \
+                  ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_ensemble_results.csv \
+                  ./results/test_Fulco_ntv3/Fulco_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
+                  ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \
+        --labels "Enformer" "Borzoi (4-fold ensemble)" "NTv3" "AlphaGenome" \
+        --max_width_subplots 4 \
+        --observed_mode decrease_only \
+        --output ./results/test_Fulco_alphagenome/plots/fulco_enf_borzoiens_ntv3_ag.png
+
     python scripts/3_benchmark/plot_fulco_results.py \
         --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \
                   ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_results.csv \
