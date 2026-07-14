@@ -8,8 +8,9 @@ and correlates with experimental log fold changes.
 
 Sequences are centred on the gene TSS (matching the SequenceModelBenchmark /
 Avsec et al. approach); the enhancer is shuffled in place within this TSS-centred
-window. CAGE readouts are aggregated at the TSS bin (``tss_seq_index // 128`` from
-``GasperiniDataset``), which is at or very near the central bin.
+window. CAGE readouts are aggregated at the TSS output bin, mapping the
+input-frame ``tss_seq_index`` (from ``GasperiniDataset``) to the cropped output
+via ``_tss_bin_from_seq_index`` (subtracting Enformer's TargetLengthCrop offset).
 
 Base-model evaluation only. See README for adding new models.
 
@@ -26,6 +27,35 @@ from tqdm import tqdm
 from enformer_pytorch import from_pretrained
 
 from crispri_eval.datasets import GasperiniDataset
+
+
+# Enformer (enformer-pytorch: EleutherAI/enformer-official-rough) constants
+ENFORMER_SEQ_LEN = 196_608            # input bp
+ENFORMER_BIN_BP = 128                 # output bin width (bp)
+ENFORMER_NUM_BINS = 896               # cropped output length (TargetLengthCrop)
+ENFORMER_CROP_BP_PER_SIDE = (ENFORMER_SEQ_LEN - ENFORMER_NUM_BINS * ENFORMER_BIN_BP) // 2  # 40960
+
+
+def _tss_seq_index_from_batch(batch):
+    v = batch["tss_seq_index"]
+    return int(v.item()) if torch.is_tensor(v) else int(v)
+
+
+def _tss_bin_from_seq_index(tss_seq_index, num_bins=ENFORMER_NUM_BINS):
+    """Map an input-sequence index (0..196607) to a cropped-output bin (0..895).
+
+    Enformer's TargetLengthCrop drops 40,960 bp per side, so that crop must be
+    subtracted before binning (else a TSS-centred window reads ~41 kb 3' of the TSS).
+    """
+    tss_output_pos = int(tss_seq_index) - ENFORMER_CROP_BP_PER_SIDE
+    if tss_output_pos < 0 or tss_output_pos >= num_bins * ENFORMER_BIN_BP:
+        raise ValueError(
+            "TSS at sequence index {} maps to output position {}, outside Enformer's "
+            "central crop [0, {}). Check the TSS-centred window and crop offset.".format(
+                tss_seq_index, tss_output_pos, num_bins * ENFORMER_BIN_BP
+            )
+        )
+    return int(tss_output_pos // ENFORMER_BIN_BP)
 
 
 def parse_args():
@@ -265,11 +295,11 @@ def main():
         pred_wt = pred_wt[:, :, model_inds]
         pred_crispri = pred_crispri[:, :, model_inds]
 
-        tss_idx = batch["tss_seq_index"]
-        tss_idx = int(tss_idx.item()) if torch.is_tensor(tss_idx) else int(tss_idx)
+        # Map the TSS from input-sequence coordinates to the cropped output bin
+        # (subtracting Enformer's TargetLengthCrop; see _tss_bin_from_seq_index).
+        tss_idx = _tss_seq_index_from_batch(batch)
         n_bins = pred_wt.shape[1]
-        tss_bin = tss_idx // 128
-        tss_bin = max(0, min(n_bins - 1, tss_bin))
+        tss_bin = _tss_bin_from_seq_index(tss_idx, num_bins=ENFORMER_NUM_BINS)
         bin_offset = args.num_central_bins // 2
         lo = max(0, tss_bin - bin_offset)
         hi = min(n_bins, tss_bin + bin_offset + 1)
