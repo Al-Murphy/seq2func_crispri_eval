@@ -1,0 +1,27 @@
+================================================================================
+GASPERINI BENCHMARK SUMMARY
+================================================================================
+
+MODEL INFORMATION
+--------------------------------------------------------------------------------
+Model: base Enformer
+Backbone path: HuggingFace EleutherAI/enformer-official-rough
+
+EVALUATION PARAMETERS
+--------------------------------------------------------------------------------
+Receptive field: 196608 bp
+Genome build: hg38
+Target cell line: K562
+Target assay: CAGE
+Number of CRISPRi negatives per pair: 50
+CRISPRi forward batch size: 4
+CRISPRi perturb mode: dinucleotide
+Enhancer region size: 2000 bp
+Central bins aggregated: 5 (around TSS bin, TSS-centred window)
+
+RESULTS
+--------------------------------------------------------------------------------
+Number of pairs evaluated: 352
+Pearson correlation: 0.2964 (p=1.44e-08)
+Spearman correlation: 0.2723 (p=2.10e-07)
+================================================================================

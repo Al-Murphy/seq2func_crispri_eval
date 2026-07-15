@@ -1,0 +1,31 @@
+================================================================================
+FULCO BENCHMARK SUMMARY
+================================================================================
+
+MODEL INFORMATION
+--------------------------------------------------------------------------------
+Model: base Enformer
+Backbone path: HuggingFace EleutherAI/enformer-official-rough
+
+EVALUATION PARAMETERS
+--------------------------------------------------------------------------------
+Receptive field: 196608 bp
+Genome build: hg38
+Target cell line: K562
+Target assay: CAGE
+Number of CRISPRi negatives per pair: 50
+CRISPRi forward batch size: 4
+CRISPRi perturb mode: dinucleotide
+Enhancer region size: 2000 bp
+Validated-only subset: True
+Gene TSS / strand file: ./metadata/Gasperini_gene_tss_hg38_biomart_GRCh38_p14.csv
+Central bins aggregated: 5 (around TSS bin, TSS-centred window)
+Fulco correlation observed subset: knockdown_only (see --fulco_corr_observed_subset)
+
+RESULTS
+--------------------------------------------------------------------------------
+Number of pairs evaluated: 62
+Pairs used for Pearson/Spearman: 62
+Pearson correlation: 0.5981 (p=2.84e-07)
+Spearman correlation: 0.3231 (p=1.04e-02)
+================================================================================
