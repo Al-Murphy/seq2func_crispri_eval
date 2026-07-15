@@ -57,7 +57,7 @@ python scripts/3_benchmark/make_borzoi_ensemble.py \
 
 # 3. Comparison plots (Borzoi entry = the ensemble CSV)
 python scripts/3_benchmark/plot_fulco_results.py \
-  --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \
+  --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \
             ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_ensemble_results.csv \
             ./results/test_Fulco_ntv3/Fulco_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
             ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \

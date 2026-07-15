@@ -17,19 +17,19 @@ only, Gasperini-style).
 Usage:
     # Single model
     python scripts/3_benchmark/plot_fulco_results.py \\
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \\
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \\
         --output ./results/test_Fulco_enformer/plots/fulco_base.png
 
     # Multiple models (subplots)
     python scripts/3_benchmark/plot_fulco_results.py \\
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \\
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \\
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_cage_results.csv \\
         --labels "Enformer" "AlphaGenome CAGE" \\
         --output ./results/test_Fulco_enformer/plots/fulco_enf_ag.png
 
     # Within 100 kb for fair Enformer vs AlphaGenome receptive-field comparison
     python scripts/3_benchmark/plot_fulco_results.py \\
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \\
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \\
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \\
         --labels "Enformer" "AlphaGenome RNA-Seq" \\
         --max_enh_dist 98304 \\
@@ -37,12 +37,12 @@ Usage:
 
     # Gasperini-like: only pairs where target RNA decreased (y_delta > 0)
     python scripts/3_benchmark/plot_fulco_results.py \\
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \\
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \\
         --observed_mode decrease_only \\
         --output ./results/test_Fulco_enformer/plots/fulco_knockdown_only.png
         
     python scripts/3_benchmark/plot_fulco_results.py \
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_cage_results.csv \
         --labels "Enformer" "AlphaGenome RNA-Seq" "AlphaGenome CAGE-Seq" \
@@ -51,7 +51,7 @@ Usage:
         --output ./results/test_Fulco_alphagenome/plots/fulco_100kb.png
         
     python scripts/3_benchmark/plot_fulco_results.py \
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \
                   ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_results.csv \
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \
         --labels "Enformer" "Borzoi" "AlphaGenome" \
@@ -60,7 +60,7 @@ Usage:
         --output ./results/test_Fulco_alphagenome/plots/fulco_enf_borzoi_ag_100kb.png 
     
     python scripts/3_benchmark/plot_fulco_results.py \
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \
                   ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_results.csv \
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \
         --labels "Enformer" "Borzoi" "AlphaGenome" \
@@ -68,7 +68,7 @@ Usage:
         --output ./results/test_Fulco_alphagenome/plots/fulco_enf_borzoi_ag.png
         
     python scripts/3_benchmark/plot_fulco_results.py \
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \
                   ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_results.csv \
                   ./results/test_Fulco_ntv3/Fulco_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \
@@ -87,7 +87,7 @@ Usage:
     #     --output ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_ensemble_results.csv
     # then pass the ensemble CSV as the single Borzoi panel:
     python scripts/plot_fulco_results.py \
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \
                   ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_ensemble_results.csv \
                   ./results/test_Fulco_ntv3/Fulco_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \
@@ -97,7 +97,7 @@ Usage:
         --output ./results/test_Fulco_alphagenome/plots/fulco_enf_borzoiens_ntv3_ag.png
 
     python scripts/3_benchmark/plot_fulco_results.py \
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \
                   ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_results.csv \
                   ./results/test_Fulco_ntv3/Fulco_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \
@@ -110,7 +110,7 @@ Usage:
         
     #don't limit to 100k    
     python scripts/3_benchmark/plot_fulco_results.py \
-        --results ./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv \
+        --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \
                   ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_cage_results.csv \
         --labels "Enformer" "AlphaGenome RNA-Seq" "AlphaGenome CAGE-Seq" \
@@ -1213,7 +1213,7 @@ def main():
         lines.append("")
         lines.append(
             "Run test_fulco_enformer.py or test_fulco_alphagenome.py first, or pass the path "
-            "printed when they finish (e.g. .../Fulco_base_base_enformer_results.csv)."
+            "printed when they finish (e.g. .../Fulco_base_enformer_results.csv)."
         )
         raise FileNotFoundError("\n".join(lines))
 

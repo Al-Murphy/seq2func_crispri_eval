@@ -9,19 +9,19 @@ multiple model results as subplots.
 Usage:
     # Single model
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
         --output ./results/test_Gasperini_enformer/plots/gasperini_base.png
     
     # Multiple models - 49k enf and lucidrains enformer (creates subplots)
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_enformer/Gasperini_finetuned_base_CL_enf_49k_human_head_results.csv \
         --labels "Enformer" "Enformer 49k" \
         --output ./results/test_Gasperini_enformer/plots/gasperini_comparison_49k_enf.png
         
     # Multiple models - 49k enf, lucidrains enformer and decima (creates subplots)
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_enformer/Gasperini_finetuned_base_CL_enf_49k_human_head_results.csv \
                   ./results/test_Gasperini_enformer/Gasperini_Decima_results.csv \
         --labels "Enformer" "Enformer 49k" "Decima Ensemble" \
@@ -29,14 +29,14 @@ Usage:
 
     # AlphaGenome base model 
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_cage_results.csv \
         --labels "Enformer" "AlphaGenome" \
         --output ./results/test_Gasperini_alphagenome/plots/gasperini_enf_ag_base.png
     
     # AlphaGenome CAGE/RNA base model 
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_cage_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_rna_seq_results.csv \
         --labels "Enformer" "AlphaGenome CAGE" "AlphaGenome RNA-Seq" \
@@ -44,7 +44,7 @@ Usage:
 
     #100 kb
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_cage_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_rna_seq_results.csv \
         --labels "Enformer" "AlphaGenome CAGE" "AlphaGenome RNA-Seq"\
@@ -53,7 +53,7 @@ Usage:
         
     #100 kb
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_borzoi/Gasperini_Borzoi_base_flashzoi_rna_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_rna_seq_results.csv \
         --labels "Enformer" "Borzoi" "AlphaGenome"\
@@ -61,14 +61,14 @@ Usage:
         --output ./results/test_Gasperini_alphagenome/plots/gasperini_enf_borzoi_ag_100kb.png   
     
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_borzoi/Gasperini_Borzoi_base_flashzoi_rna_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_rna_seq_results.csv \
         --labels "Enformer" "Borzoi" "AlphaGenome"\
         --output ./results/test_Gasperini_alphagenome/plots/gasperini_enf_borzoi_ag.png     
         
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_borzoi/Gasperini_Borzoi_base_flashzoi_rna_results.csv \
                   ./results/test_Gasperini_ntv3/Gasperini_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_rna_seq_results.csv \
@@ -86,7 +86,7 @@ Usage:
     #     --output ./results/test_Gasperini_borzoi/Gasperini_Borzoi_base_flashzoi_rna_ensemble_results.csv
     # then pass the ensemble CSV as the single Borzoi panel:
     python scripts/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_borzoi/Gasperini_Borzoi_base_flashzoi_rna_ensemble_results.csv \
                   ./results/test_Gasperini_ntv3/Gasperini_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_rna_seq_results.csv \
@@ -95,7 +95,7 @@ Usage:
         --output ./results/test_Gasperini_alphagenome/plots/gasperini_enf_borzoiens_ntv3_ag.png
 
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_borzoi/Gasperini_Borzoi_base_flashzoi_rna_results.csv \
                   ./results/test_Gasperini_ntv3/Gasperini_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_rna_seq_results.csv \
@@ -106,7 +106,7 @@ Usage:
 
     # Same as above but only pairs within 100 kb of TSS (fair Enformer vs AlphaGenome window)
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_cage_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_rna_seq_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_rna_tss_results.csv \
@@ -124,7 +124,7 @@ Usage:
 
     # All models side-by-side
     python scripts/3_benchmark/plot_gasperini_results.py \
-        --results ./results/test_Gasperini_enformer/Gasperini_base_base_enformer_results.csv \
+        --results ./results/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
                   ./results/test_Gasperini_enformer/Gasperini_Decima_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_results.csv \
                   ./results/test_Gasperini_alphagenome/Gasperini_AlphaGenome_finetuned_CTLA4_..._head_original_results.csv \

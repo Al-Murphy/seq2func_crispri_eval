@@ -22,7 +22,7 @@ Usage:
     python scripts/summarize_benchmark_correlations.py \\
         --benchmark fulco \\
         --results \\
-          "Enformer=./results/test_Fulco_enformer/Fulco_base_base_enformer_results.csv" \\
+          "Enformer=./results/test_Fulco_enformer/Fulco_base_enformer_results.csv" \\
           "Borzoi fold0=./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_results.csv" \\
           "Borzoi ensemble=./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_ensemble_results.csv" \\
         --output_csv ./results/test_Fulco_borzoi/fulco_correlation_summary.csv
