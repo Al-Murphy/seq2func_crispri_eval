@@ -399,8 +399,20 @@ def _fulco_ensembl_lookup_symbols(symbols, genome_build="hg38"):
         url = server + path + "?content-type=application/json"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (FulcoDataset)"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
+            # A failed lookup silently drops that gene's pairs, so retry
+            # transient failures (timeouts, 5xx); a 404 is a real non-match.
+            for attempt in range(4):
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        data = json.loads(resp.read().decode())
+                    break
+                except urllib.error.HTTPError as exc:
+                    if exc.code < 500 or attempt == 3:
+                        raise
+                except Exception:
+                    if attempt == 3:
+                        raise
+                time.sleep(2 ** (attempt + 1))
             gid = str(data.get("id", "")).split(".")[0]
             st = data.get("strand", None)
             if gid and st is not None:
