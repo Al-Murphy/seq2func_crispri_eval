@@ -24,7 +24,7 @@ mkdir -p "${PLOTS_DIR}"
 
 python scripts/test_fulco_enformer.py     --save_path ${RESULTS_ROOT}/test_Fulco_enformer/
 python scripts/test_fulco_borzoi.py       --save_path ${RESULTS_ROOT}/test_Fulco_borzoi/    --use_flashzoi
-python scripts/test_fulco_ntv3.py         --save_path ${RESULTS_ROOT}/test_Fulco_ntv3/      --autocast_dtype bf16
+python scripts/test_fulco_ntv3.py         --save_path ${RESULTS_ROOT}/test_Fulco_ntv3/
 python scripts/test_fulco_alphagenome.py  --save_path ${RESULTS_ROOT}/test_Fulco_alphagenome/
 
 # -----------------------------------------------------------------------------
@@ -33,7 +33,7 @@ python scripts/test_fulco_alphagenome.py  --save_path ${RESULTS_ROOT}/test_Fulco
 
 python scripts/test_gasperini_enformer.py     --save_path ${RESULTS_ROOT}/test_Gasperini_enformer/
 python scripts/test_gasperini_borzoi.py       --save_path ${RESULTS_ROOT}/test_Gasperini_borzoi/    --use_flashzoi
-python scripts/test_gasperini_ntv3.py         --save_path ${RESULTS_ROOT}/test_Gasperini_ntv3/      --autocast_dtype bf16
+python scripts/test_gasperini_ntv3.py         --save_path ${RESULTS_ROOT}/test_Gasperini_ntv3/
 python scripts/test_gasperini_alphagenome.py  --save_path ${RESULTS_ROOT}/test_Gasperini_alphagenome/
 
 # -----------------------------------------------------------------------------
@@ -44,7 +44,7 @@ python scripts/plot_fulco_results.py \
     --results \
         ${RESULTS_ROOT}/test_Fulco_enformer/Fulco_base_enformer_results.csv \
         ${RESULTS_ROOT}/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_results.csv \
-        ${RESULTS_ROOT}/test_Fulco_ntv3/Fulco_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
+        ${RESULTS_ROOT}/test_Fulco_ntv3/Fulco_NTv3_InstaDeepAI_NTv3_tracks_1mb_rna_results.csv \
         ${RESULTS_ROOT}/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \
     --labels "Enformer" "Borzoi" "NTv3" "AlphaGenome" \
     --max_width_subplots 4 \
@@ -55,7 +55,7 @@ python scripts/plot_gasperini_results.py \
     --results \
         ${RESULTS_ROOT}/test_Gasperini_enformer/Gasperini_base_enformer_results.csv \
         ${RESULTS_ROOT}/test_Gasperini_borzoi/Gasperini_Borzoi_base_flashzoi_rna_results.csv \
-        ${RESULTS_ROOT}/test_Gasperini_ntv3/Gasperini_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
+        ${RESULTS_ROOT}/test_Gasperini_ntv3/Gasperini_NTv3_InstaDeepAI_NTv3_tracks_1mb_rna_results.csv \
         ${RESULTS_ROOT}/test_Gasperini_alphagenome/Gasperini_AlphaGenome_base_rna_seq_results.csv \
     --labels "Enformer" "Borzoi" "NTv3" "AlphaGenome" \
     --max_width_subplots 4 \

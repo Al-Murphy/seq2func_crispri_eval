@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-Test base Nucleotide Transformer V3 (InstaDeepAI/NTv3_650M_post) on Gasperini et al.
-validated CRISPRi enhancer-gene pairs.
+Test base Nucleotide Transformer V3 on Gasperini et al. validated CRISPRi
+enhancer-gene pairs.
 
 Base-model evaluation only. See README for adding new models.
 
-See ``test_fulco_ntv3.py`` for a long-form explanation of NTv3's output crop,
-species token, track-selection options, and ``--score_mode`` semantics.
+Defaults to the revised release (InstaDeepAI/NTv3_tracks_1mb, soft-masked
+input); pass ``--model_name InstaDeepAI/NTv3_650M_post`` for the initial
+release. See ``test_fulco_ntv3.py`` for a long-form explanation of the two
+releases, NTv3's output crop, species token, soft-masking, track-selection
+options, and ``--score_mode`` semantics.
 
 Usage:
     # K562 RNA-Seq (ENCSR056HPM), 1 Mb context (defaults)
-    python scripts/test_gasperini_ntv3.py --autocast_dtype bf16
+    python scripts/test_gasperini_ntv3.py
 
     # K562 CAGE (CNhs11250 strand pair)
     python scripts/test_gasperini_ntv3.py --target_assay CAGE
@@ -33,16 +36,18 @@ import urllib.request as _urlreq
 
 import numpy as np
 import pandas as pd
+import pysam
 import torch
 from scipy.stats import pearsonr, spearmanr
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from crispri_eval.datasets import GasperiniDataset
+from crispri_eval.dataset_utils import get_genome
 
 
-# NTv3_650M_post constants
-NTV3_DEFAULT_MODEL = "InstaDeepAI/NTv3_650M_post"
+# NTv3 constants (shared by both releases)
+NTV3_DEFAULT_MODEL = "InstaDeepAI/NTv3_tracks_1mb"
 NTV3_SEQ_LEN = 1_048_576           # input bp
 NTV3_PAD_MULTIPLE = 128
 NTV3_PRED_CENTER_FRACTION = 0.375
@@ -52,8 +57,16 @@ DEFAULT_WINDOW_BP = 640
 
 NTV3_ACGT_TO_TOKEN = torch.tensor([6, 8, 9, 7], dtype=torch.long)
 NTV3_N_TOKEN_ID = 10
+# Revised release only: lowercase a/t/c/g/n sit at 11..15, i.e. uppercase id + 5.
+NTV3_LOWERCASE_OFFSET = 5
+_NTV3_ASCII_TO_TOKEN = np.full(256, NTV3_N_TOKEN_ID, dtype=np.int64)
+_NTV3_ASCII_TO_RC_TOKEN = np.full(256, NTV3_N_TOKEN_ID, dtype=np.int64)
+for _b, _t, _rc in zip("ACGT", (6, 8, 9, 7), (7, 9, 8, 6)):
+    _NTV3_ASCII_TO_TOKEN[ord(_b)] = _t
+    _NTV3_ASCII_TO_RC_TOKEN[ord(_b)] = _rc
 
-# K562 track IDs from the InstaDeepAI/ntv3 demo notebook.
+# K562 track IDs from the InstaDeepAI/ntv3 demo notebook (identical human
+# track list in both releases).
 # K562 RNA-Seq default: the K562 RNA accessions NTv3 shares with Borzoi's
 # targets_human.txt panel (67 of Borzoi's 71 unique K562 RNA accessions ->
 # 86 NTv3 track columns after _P/_M strand expansion). NTv3 was post-trained on
@@ -128,12 +141,17 @@ def parse_args():
         help=(
             "HuggingFace model id (or local snapshot path) for the post-trained "
             "NTv3 checkpoint. Loaded via "
-            "AutoModel.from_pretrained(..., trust_remote_code=True)."
+            "AutoModel.from_pretrained(..., trust_remote_code=True). Use "
+            "InstaDeepAI/NTv3_650M_post for the initial (Dec 2025) release."
         ),
     )
     p.add_argument(
         "--species", type=str, default="human",
-        help="Species token (must be one of cfg.bigwigs_per_species).",
+        help="Species token (must be a species the checkpoint has tracks for).",
+    )
+    p.add_argument(
+        "--no_softmask", action="store_true",
+        help="Revised release only: feed upper-case tokens everywhere (ablation).",
     )
 
     p.add_argument(
@@ -160,7 +178,7 @@ def parse_args():
     )
     p.add_argument(
         "--track_indices", type=str, default=None,
-        help="Comma-separated integer indices into cfg.bigwigs_per_species[species].",
+        help="Comma-separated integer indices into the species track list.",
     )
     p.add_argument(
         "--use_borzoi_xref", action="store_true",
@@ -264,10 +282,26 @@ def parse_args():
     p.add_argument(
         "--autocast_dtype", type=str, default=None,
         choices=[None, "bf16", "fp16"],
-        help="Run forward passes under torch.autocast(dtype=...). Recommended: bf16.",
+        help="Run forward passes under torch.autocast(dtype=...). Leave unset (fp32; "
+             "matches the published results).",
     )
 
-    return p.parse_args()
+    # -- Sharding (for SLURM array parallelisation) ---------------------------
+    p.add_argument(
+        "--num_shards", type=int, default=1,
+        help="Split the enhancer-gene pairs into this many strided shards (for cluster arrays).",
+    )
+    p.add_argument(
+        "--shard_idx", type=int, default=0,
+        help="0-based shard index in [0, num_shards). Each shard processes pairs[shard_idx::num_shards].",
+    )
+
+    args = p.parse_args()
+    if args.num_shards < 1:
+        p.error("--num_shards must be >= 1")
+    if not (0 <= args.shard_idx < args.num_shards):
+        p.error("--shard_idx must be in [0, num_shards)")
+    return args
 
 
 def _lookup_names(names, name_to_idx, source_desc):
@@ -404,6 +438,37 @@ def onehot_to_ntv3_tokens(x_onehot, device):
     return tokens
 
 
+def window_softmask(fasta, chrom, seq_start, seq_len, strand, wt_tokens):
+    """(L,) bool lowercase mask for one dataset window, in model-input order.
+
+    Re-fetched with case preserved and checked base-for-base against the
+    dataset's x_WT (``wt_tokens``); see ``test_fulco_ntv3.py``.
+    """
+    chrom_len = fasta.get_reference_length(chrom)
+    start, end = max(0, seq_start), min(seq_start + seq_len, chrom_len)
+    seq = (
+        "N" * (start - seq_start)
+        + fasta.fetch(chrom, start, end)
+        + "N" * (seq_start + seq_len - end)
+    )
+    raw = np.frombuffer(seq.encode("ascii"), dtype=np.uint8)
+    upper = np.frombuffer(seq.upper().encode("ascii"), dtype=np.uint8)
+    is_lower = raw != upper
+    if strand < 1:
+        is_lower = is_lower[::-1]
+        tokens = _NTV3_ASCII_TO_RC_TOKEN[upper][::-1]
+    else:
+        tokens = _NTV3_ASCII_TO_TOKEN[upper]
+    n_mismatch = int((tokens != np.asarray(wt_tokens)).sum())
+    if n_mismatch:
+        raise RuntimeError(
+            "Soft-mask window {}:{} (strand {}) disagrees with x_WT at {} bases.".format(
+                chrom, seq_start, strand, n_mismatch
+            )
+        )
+    return torch.from_numpy(is_lower.copy())
+
+
 def load_ntv3(model_name, device):
     """Load the post-trained NTv3 model + tokenizer with trust_remote_code=True."""
     from transformers import AutoConfig, AutoModel, AutoTokenizer
@@ -416,6 +481,29 @@ def load_ntv3(model_name, device):
     return model, tokenizer, config
 
 
+def ntv3_release_spec(model, config, species, device):
+    """Return ``(is_revised, track_names, species_ids)`` for either NTv3 release."""
+    meta = getattr(config, "track_metadata", None)
+    if meta is not None:
+        vocab = meta["species_vocabulary"]
+        if species not in meta["species_to_assembly"]:
+            raise ValueError("Species '{}' not in this checkpoint (have {}).".format(
+                species, sorted(meta["species_to_assembly"])))
+        assembly = meta["species_to_assembly"][species]
+        track_names = list(meta["bigwigs_per_file_assembly"][assembly])
+        species_ids = torch.tensor([vocab[species]], dtype=torch.long, device=device)
+        return True, track_names, species_ids
+
+    if species not in config.bigwigs_per_species:
+        raise ValueError("Species '{}' not in this checkpoint (have {}).".format(
+            species, sorted(config.bigwigs_per_species)))
+    track_names = list(config.bigwigs_per_species[species])
+    species_ids = torch.as_tensor(
+        model.encode_species([species]), dtype=torch.long, device=device
+    ).reshape(-1)
+    return False, track_names, species_ids
+
+
 def _autocast_ctx(device, autocast_dtype):
     if autocast_dtype is None or device == "cpu":
         return torch.amp.autocast(device_type="cpu", enabled=False)
@@ -424,8 +512,11 @@ def _autocast_ctx(device, autocast_dtype):
 
 
 def _aggregate(pred, track_inds, tss_output_idx, window_bp, apply_softplus, exon_out=None):
-    """Aggregate NTv3 bigwig_tracks_logits (B, L_pred, T) over tracks and TSS window."""
-    sig = pred[:, :, track_inds]
+    """Aggregate NTv3 bigwig_tracks_logits (B, L_pred, T) over tracks and TSS window.
+
+    ``track_inds=None`` means ``pred`` already holds only the selected tracks.
+    """
+    sig = pred if track_inds is None else pred[:, :, track_inds]
     if apply_softplus:
         sig = torch.nn.functional.softplus(sig)
     if exon_out:
@@ -444,13 +535,22 @@ def _aggregate(pred, track_inds, tss_output_idx, window_bp, apply_softplus, exon
 
 def _predict(model, species_ids_template, x_onehot, track_inds_tensor,
              tss_output_idx, window_bp, apply_softplus, device, autocast_dtype,
-             exon_out=None):
+             exon_out=None, is_revised=False, softmask=None):
     """Forward x through NTv3 and aggregate to a scalar per batch row."""
     tokens = onehot_to_ntv3_tokens(x_onehot, device)
+    if softmask is not None:
+        tokens = tokens + NTV3_LOWERCASE_OFFSET * softmask.to(device).long()[None, :]
     B = tokens.shape[0]
     species_ids = species_ids_template[:1].expand(B).contiguous()
     with torch.no_grad(), _autocast_ctx(device, autocast_dtype):
-        out = model(input_ids=tokens, species_ids=species_ids)
+        if is_revised:
+            # Only the selected track columns are computed.
+            out = model(input_ids=tokens, conditions_tokens=[species_ids],
+                        track_indices=track_inds_tensor,
+                        skip_bed_head=True, skip_lm_head=True)
+            track_inds_tensor = None
+        else:
+            out = model(input_ids=tokens, species_ids=species_ids)
         pred = out["bigwig_tracks_logits"]
     return _aggregate(pred, track_inds_tensor, tss_output_idx, window_bp,
                       apply_softplus, exon_out=exon_out)
@@ -570,25 +670,18 @@ def main():
     model, tokenizer, config = load_ntv3(args.model_name, device)
     model_name_tag = re.sub(r"[^\w\-.]+", "_", args.model_name)
 
-    if args.species not in config.bigwigs_per_species:
-        raise ValueError(
-            "Species '{}' not in cfg.bigwigs_per_species (have {}).".format(
-                args.species, list(config.bigwigs_per_species.keys())
-            )
-        )
-    ntv3_track_names = list(config.bigwigs_per_species[args.species])
+    is_revised, ntv3_track_names, species_ids = ntv3_release_spec(
+        model, config, args.species, device
+    )
+    use_softmask = is_revised and not args.no_softmask
+    print("NTv3 release: {}  |  soft-masked input: {}".format(
+        "revised (2026)" if is_revised else "initial (2025)", use_softmask))
     print("NTv3 has {} {} BigWig tracks.".format(len(ntv3_track_names), args.species))
+    fasta = pysam.FastaFile(get_genome(build=args.genome_build)) if use_softmask else None
 
     track_inds, track_desc = _resolve_track_indices(args, ntv3_track_names)
     print("Track selection: {}".format(track_desc))
     track_inds_tensor = torch.as_tensor(track_inds, dtype=torch.long, device=device)
-
-    species_ids = model.encode_species([args.species])
-    species_ids = species_ids.to(device) if torch.is_tensor(species_ids) else torch.as_tensor(
-        species_ids, dtype=torch.long, device=device
-    )
-    if species_ids.dim() != 1:
-        species_ids = species_ids.reshape(-1)
 
     if NTV3_SEQ_LEN % NTV3_PAD_MULTIPLE != 0:
         raise ValueError(
@@ -619,6 +712,16 @@ def main():
             raise ValueError(
                 "No Gasperini pairs found for gene '{}'.".format(args.gene)
             )
+
+    # ---- Shard the pairs (for SLURM array parallelisation) ------------------
+    if args.num_shards > 1:
+        n_all = len(dataset.crispri_data)
+        dataset.crispri_data = (
+            dataset.crispri_data.iloc[args.shard_idx::args.num_shards].reset_index(drop=True)
+        )
+        print("Shard {}/{}: {} of {} pairs".format(
+            args.shard_idx, args.num_shards, len(dataset.crispri_data), n_all
+        ))
 
     # ---- Exon annotations (RNA-Seq exon aggregation) --------------------
     exon_coords = None
@@ -676,11 +779,12 @@ def main():
     all_debug_crispri_min = []
     all_debug_crispri_max = []
 
-    def _predict_batch(x_batch, tss_output_idx, exon_out=None):
+    def _predict_batch(x_batch, tss_output_idx, exon_out=None, softmask=None):
         return _predict(
             model, species_ids, x_batch, track_inds_tensor,
             tss_output_idx, args.window_bp, args.apply_softplus,
             device, args.autocast_dtype, exon_out=exon_out,
+            is_revised=is_revised, softmask=softmask,
         )
 
     for batch in tqdm(dataloader, total=len(dataloader)):
@@ -695,16 +799,25 @@ def main():
         tss_seq_idx = _tss_seq_index_from_batch(batch)
         tss_output_idx, _ = _tss_output_index(tss_seq_idx, seq_len=NTV3_SEQ_LEN)
 
+        # Window coordinates, as GasperiniDataset built them (TSS-centred, no shift).
+        tss_i = int(batch["tss"].item()) if torch.is_tensor(batch["tss"]) else int(batch["tss"])
+        strand_i = int(batch["strand"].item()) if torch.is_tensor(batch["strand"]) else int(batch["strand"])
+        chrom_v = (
+            batch["enh_loc"].split(":")[0]
+            if isinstance(batch["enh_loc"], str) else str(batch["enh_loc"])
+        )
+        seq_start = tss_i - NTV3_SEQ_LEN // 2
+
+        softmask = None
+        if use_softmask:
+            softmask = window_softmask(
+                fasta, chrom_v, seq_start, NTV3_SEQ_LEN, strand_i,
+                onehot_to_ntv3_tokens(x_wt, "cpu")[0].numpy(),
+            )
+
         # RNA-Seq: map this gene's GENCODE exons into NTv3's output crop.
         exon_out = None
         if exon_coords is not None:
-            tss_i = int(batch["tss"].item()) if torch.is_tensor(batch["tss"]) else int(batch["tss"])
-            strand_i = int(batch["strand"].item()) if torch.is_tensor(batch["strand"]) else int(batch["strand"])
-            chrom_v = (
-                batch["enh_loc"].split(":")[0]
-                if isinstance(batch["enh_loc"], str) else str(batch["enh_loc"])
-            )
-            seq_start = tss_i - NTV3_SEQ_LEN // 2
             exon_in = _exon_seq_indices(
                 batch["gene_id"], exon_coords, chrom_v, seq_start, NTV3_SEQ_LEN, strand_i
             )
@@ -712,12 +825,14 @@ def main():
             if not exon_out:
                 exon_out = None  # no exon bp landed in the crop -> TSS-window fallback
 
-        pred_wt = _predict_batch(x_wt, tss_output_idx, exon_out)[0]
+        pred_wt = _predict_batch(x_wt, tss_output_idx, exon_out, softmask)[0]
 
         pred_crispri_list = []
         bs = max(1, int(args.shuffle_batch_size))
         for i in range(0, x_crispri.shape[0], bs):
-            pred_crispri_list.extend(_predict_batch(x_crispri[i : i + bs], tss_output_idx, exon_out))
+            pred_crispri_list.extend(
+                _predict_batch(x_crispri[i : i + bs], tss_output_idx, exon_out, softmask)
+            )
 
         pred_crispri_mean = sum(pred_crispri_list) / len(pred_crispri_list)
         pred_crispri_std = float(np.std(pred_crispri_list))
@@ -777,6 +892,26 @@ def main():
         df_results["debug_crispri_min"] = all_debug_crispri_min
         df_results["debug_crispri_max"] = all_debug_crispri_max
 
+    if args.output_prefix is None:
+        assay_tag = "_{}".format(args.target_assay.lower())
+        output_prefix = "Gasperini_NTv3_{}{}".format(model_name_tag, assay_tag)
+    else:
+        output_prefix = args.output_prefix
+
+    # In sharded mode, write only this shard's per-pair CSV; the merge step
+    # (scripts/merge_tta_shards.py) concatenates shards and computes correlations.
+    if args.num_shards > 1:
+        shard_csv = os.path.join(
+            args.save_path,
+            "{}_shard{:03d}of{:03d}_results.csv".format(
+                output_prefix, args.shard_idx, args.num_shards
+            ),
+        )
+        df_results.to_csv(shard_csv, index=False)
+        print("\nShard {}/{} results saved to: {}".format(
+            args.shard_idx, args.num_shards, shard_csv))
+        return df_results
+
     pearson_r, pearson_p = pearsonr(df_results["y_delta"], df_results["pred_delta"])
     spearman_r, spearman_p = spearmanr(df_results["y_delta"], df_results["pred_delta"])
 
@@ -801,12 +936,6 @@ def main():
     print("  Spearman r: {:.4f}  (p={:.2e})".format(log_spr_r, log_spr_p))
     print("=" * 80)
 
-    if args.output_prefix is None:
-        assay_tag = "_{}".format(args.target_assay.lower())
-        output_prefix = "Gasperini_NTv3_{}{}".format(model_name_tag, assay_tag)
-    else:
-        output_prefix = args.output_prefix
-
     csv_path = os.path.join(args.save_path, "{}_results.csv".format(output_prefix))
     df_results.to_csv(csv_path, index=False)
     print("\nResults saved to: {}".format(csv_path))
@@ -820,6 +949,10 @@ def main():
         f.write("-" * 80 + "\n")
         f.write("Model name:        {}\n".format(args.model_name))
         f.write("Species:           {}\n".format(args.species))
+        f.write("Release:           {}\n".format(
+            "revised (2026)" if is_revised else "initial (2025)"))
+        f.write("Soft-masked input: {}\n".format(use_softmask))
+        f.write("Autocast:          {}\n".format(args.autocast_dtype or "off (fp32)"))
         f.write("\nEVALUATION PARAMETERS\n")
         f.write("-" * 80 + "\n")
         f.write("Context window:    {:,} bp\n".format(NTV3_SEQ_LEN))
@@ -828,7 +961,10 @@ def main():
             int(NTV3_SEQ_LEN * NTV3_PRED_OFFSET_FRACTION),
             int(NTV3_SEQ_LEN * NTV3_PRED_OFFSET_FRACTION) + int(NTV3_SEQ_LEN * NTV3_PRED_CENTER_FRACTION),
         ))
-        f.write("TSS-centred window: {} bp (--window_bp)\n".format(args.window_bp))
+        f.write("Readout:           exon mean for {} / {} pairs; TSS-centred {} bp "
+                "window (--window_bp) for the rest\n".format(
+                    sum(1 for e in all_debug_exon_bp if e), len(all_debug_exon_bp),
+                    args.window_bp))
         f.write("Apply softplus:    {}\n".format(args.apply_softplus))
         f.write("Score mode:        {}\n".format(args.score_mode))
         f.write("Genome build:      {}\n".format(args.genome_build))

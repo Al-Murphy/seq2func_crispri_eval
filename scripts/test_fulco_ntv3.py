@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """
-Test base Nucleotide Transformer V3 (InstaDeepAI/NTv3_650M_post) on Fulco et al.
-(2019) CRISPRi enhancer knockdown pairs (Karollus et al. 2023 windowing).
+Test base Nucleotide Transformer V3 on Fulco et al. (2019) CRISPRi enhancer
+knockdown pairs (Karollus et al. 2023 windowing).
 
 Base-model evaluation only. See README for adding new models.
 
-NTv3_650M_post is a conditioned-U-Net DNA model post-trained on ~7,362 human
-BigWig regression tracks plus BED element heads. It accepts character-tokenised
-DNA up to 1 Mb in length and returns ``bigwig_tracks_logits`` cropped to the
-middle 37.5 % of the input window (1 bp resolution).
+Two NTv3 releases are supported; which one is detected from the loaded config:
+  - InstaDeepAI/NTv3_tracks_1mb (default): the revised release (bioRxiv v2,
+    Oct 2026), the 1 Mb model behind the paper's results. Its 16-token
+    vocabulary is soft-masked, so repeat-masked (lowercase) hg38 bases are
+    passed as lowercase tokens; ``--no_softmask`` feeds uppercase only.
+  - InstaDeepAI/NTv3_650M_post: the initial release (Dec 2025), 11-token
+    uppercase vocabulary. Pass it via ``--model_name`` to reproduce the
+    original blog numbers.
+Both are conditioned U-Nets post-trained on the same 7,362 human BigWig
+tracks. They take character-tokenised DNA up to 1 Mb and return
+``bigwig_tracks_logits`` cropped to the middle 37.5 % of the input window
+(1 bp resolution).
 
 For the BASE model:
   - K562 RNA-Seq / CAGE default to the full set of K562 tracks NTv3 shares with
@@ -52,14 +60,18 @@ NTv3 specifics:
   - Output covers genomic span ``[tss - L/2 + 0.3125 L, tss - L/2 + 0.6875 L)``
     in input-window coordinates -- so when the input is centred on the TSS,
     the TSS lands at output index ``L_pred // 2``.
-  - Species token: ``model.encode_species(["human"])`` (matches ``cfg.species_to_token_id``).
+  - Species token: ``model.encode_species(["human"])`` passed as ``species_ids``
+    (initial release); ``track_metadata["species_vocabulary"]["human"]`` passed
+    as ``conditions_tokens`` (revised release).
+  - Soft-masking (revised release): the dataset upper-cases sequence, so the
+    lowercase mask is re-fetched for the same window and checked base-for-base
+    against ``x_WT``. Shuffled CRISPRi sequences keep the WT mask by position.
 
 Usage:
     # K562 RNA-Seq (ENCSR056HPM), 1 Mb context (defaults)
     python scripts/test_fulco_ntv3.py \\
         --data_path ./metadata/fulco/ \\
-        --gene_tss_csv ./metadata/Gasperini_gene_tss_hg38_biomart_GRCh38_p14.csv \\
-        --autocast_dtype bf16
+        --gene_tss_csv ./metadata/Gasperini_gene_tss_hg38_biomart_GRCh38_p14.csv
 
     # K562 CAGE (CNhs11250 strand pair)
     python scripts/test_fulco_ntv3.py --target_assay CAGE
@@ -82,17 +94,19 @@ import urllib.request as _urlreq
 
 import numpy as np
 import pandas as pd
+import pysam
 import torch
 from scipy.stats import pearsonr, spearmanr
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from crispri_eval.datasets import FulcoDataset
+from crispri_eval.dataset_utils import get_genome
 from crispri_eval.benchmark_utils import fulco_results_for_correlation
 
 
-# NTv3_650M_post constants
-NTV3_DEFAULT_MODEL = "InstaDeepAI/NTv3_650M_post"
+# NTv3 constants (shared by both releases)
+NTV3_DEFAULT_MODEL = "InstaDeepAI/NTv3_tracks_1mb"
 NTV3_SEQ_LEN = 1_048_576           # input bp (max context; multiple of 128)
 NTV3_PAD_MULTIPLE = 128
 # Output covers the middle 37.5% of the input window (config: keep_target_center_fraction)
@@ -106,10 +120,20 @@ DEFAULT_WINDOW_BP = 640
 # Build a (4,) tensor mapping one-hot argmax -> NTv3 token id at the chars [A,C,G,T].
 NTV3_ACGT_TO_TOKEN = torch.tensor([6, 8, 9, 7], dtype=torch.long)
 NTV3_N_TOKEN_ID = 10
+# Revised release only: lowercase a/t/c/g/n sit at 11..15, i.e. uppercase id + 5.
+NTV3_LOWERCASE_OFFSET = 5
+# ASCII -> NTv3 token for an upper-cased genome string, plain and complemented
+# (minus-strand windows are reverse-complemented by the dataset).
+_NTV3_ASCII_TO_TOKEN = np.full(256, NTV3_N_TOKEN_ID, dtype=np.int64)
+_NTV3_ASCII_TO_RC_TOKEN = np.full(256, NTV3_N_TOKEN_ID, dtype=np.int64)
+for _b, _t, _rc in zip("ACGT", (6, 8, 9, 7), (7, 9, 8, 6)):
+    _NTV3_ASCII_TO_TOKEN[ord(_b)] = _t
+    _NTV3_ASCII_TO_RC_TOKEN[ord(_b)] = _rc
 
 # K562 track IDs from the InstaDeepAI/ntv3 demo notebook
 # (Space: notebooks_tutorials/05_model_interpretation.ipynb).
-# Verified present in cfg.bigwigs_per_species["human"] for NTv3_650M_post.
+# Verified present in the human track list of both releases (the two lists are
+# identical, same 7,362 IDs in the same order).
 # K562 RNA-Seq default: the K562 RNA accessions NTv3 shares with Borzoi's
 # targets_human.txt panel (67 of Borzoi's 71 unique K562 RNA accessions ->
 # 86 NTv3 track columns after _P/_M strand expansion). NTv3 was post-trained on
@@ -198,7 +222,8 @@ def parse_args():
         help=(
             "HuggingFace model id (or local snapshot path) for the post-trained "
             "NTv3 checkpoint. Loaded via "
-            "AutoModel.from_pretrained(..., trust_remote_code=True)."
+            "AutoModel.from_pretrained(..., trust_remote_code=True). Use "
+            "InstaDeepAI/NTv3_650M_post for the initial (Dec 2025) release."
         ),
     )
     p.add_argument(
@@ -206,8 +231,16 @@ def parse_args():
         type=str,
         default="human",
         help=(
-            "Species token used for the conditioned U-Net. Must be one of "
-            "cfg.bigwigs_per_species (e.g. 'human', 'mouse')."
+            "Species token used for the conditioned U-Net (e.g. 'human', "
+            "'mouse'). Must be a species the checkpoint has tracks for."
+        ),
+    )
+    p.add_argument(
+        "--no_softmask",
+        action="store_true",
+        help=(
+            "Revised release only: feed upper-case tokens everywhere instead of "
+            "the soft-masked genome the model was trained on (ablation)."
         ),
     )
 
@@ -238,7 +271,7 @@ def parse_args():
         type=str,
         default=None,
         help=(
-            "Comma-separated NTv3 track names (matching cfg.bigwigs_per_species[species] "
+            "Comma-separated NTv3 track names (matching the species track list "
             "entries, e.g. 'ENCSR056HPM,ENCSR000AEP'). Overrides --target_assay defaults."
         ),
     )
@@ -256,7 +289,7 @@ def parse_args():
         type=str,
         default=None,
         help=(
-            "Comma-separated integer indices into cfg.bigwigs_per_species[species] "
+            "Comma-separated integer indices into the species track list "
             "(overrides every other track-selection arg)."
         ),
     )
@@ -325,7 +358,7 @@ def parse_args():
         default=1,
         help=(
             "CRISPRi shuffles per forward pass. NTv3 + 1 Mb input is memory "
-            "heavy (~5.8 GB per sample at bf16 for the full 393k x 7362 output). "
+            "heavy (~11.6 GB per sample in fp32 for the full 393k x 7362 output). "
             "Use 1 unless on a >40 GB GPU."
         ),
     )
@@ -427,8 +460,9 @@ def parse_args():
         default=None,
         choices=[None, "bf16", "fp16"],
         help=(
-            "Run forward passes under torch.autocast(dtype=...) for speed/memory. "
-            "Recommended: bf16 on modern NVIDIA GPUs."
+            "Run forward passes under torch.autocast(dtype=...). Leave unset (fp32; "
+            "matches the published results): eager bf16 error is the same size as "
+            "the WT-vs-shuffle difference being scored."
         ),
     )
 
@@ -599,6 +633,42 @@ def onehot_to_ntv3_tokens(x_onehot, device):
     return tokens
 
 
+def window_softmask(fasta, chrom, seq_start, seq_len, strand, wt_tokens):
+    """
+    Lowercase (repeat-masked) mask for one dataset window, in model-input order.
+
+    Re-fetches ``[seq_start, seq_start + seq_len)`` with case preserved and the
+    same N padding as ``seq_loader.get_seq_start``, and flips it for minus-strand
+    genes (the dataset reverse-complements those). The upper-cased bases are
+    checked against ``wt_tokens`` (the dataset's x_WT as NTv3 tokens), so a
+    misaligned mask raises instead of silently conditioning the wrong bases.
+    Returns a (L,) bool tensor.
+    """
+    chrom_len = fasta.get_reference_length(chrom)
+    start, end = max(0, seq_start), min(seq_start + seq_len, chrom_len)
+    seq = (
+        "N" * (start - seq_start)
+        + fasta.fetch(chrom, start, end)
+        + "N" * (seq_start + seq_len - end)
+    )
+    raw = np.frombuffer(seq.encode("ascii"), dtype=np.uint8)
+    upper = np.frombuffer(seq.upper().encode("ascii"), dtype=np.uint8)
+    is_lower = raw != upper
+    if strand < 1:
+        is_lower = is_lower[::-1]
+        tokens = _NTV3_ASCII_TO_RC_TOKEN[upper][::-1]
+    else:
+        tokens = _NTV3_ASCII_TO_TOKEN[upper]
+    n_mismatch = int((tokens != np.asarray(wt_tokens)).sum())
+    if n_mismatch:
+        raise RuntimeError(
+            "Soft-mask window {}:{} (strand {}) disagrees with x_WT at {} bases.".format(
+                chrom, seq_start, strand, n_mismatch
+            )
+        )
+    return torch.from_numpy(is_lower.copy())
+
+
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
@@ -613,6 +683,36 @@ def load_ntv3(model_name, device):
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model.eval().to(device)
     return model, tokenizer, config
+
+
+def ntv3_release_spec(model, config, species, device):
+    """
+    Resolve what differs between the two NTv3 releases.
+
+    Returns ``(is_revised, track_names, species_ids)`` where ``track_names`` is
+    the species' ordered BigWig track list and ``species_ids`` a (1,) long tensor.
+    The revised release ships its track metadata inside the config; the initial
+    release keys tracks by species in ``bigwigs_per_species``.
+    """
+    meta = getattr(config, "track_metadata", None)
+    if meta is not None:
+        vocab = meta["species_vocabulary"]
+        if species not in meta["species_to_assembly"]:
+            raise ValueError("Species '{}' not in this checkpoint (have {}).".format(
+                species, sorted(meta["species_to_assembly"])))
+        assembly = meta["species_to_assembly"][species]
+        track_names = list(meta["bigwigs_per_file_assembly"][assembly])
+        species_ids = torch.tensor([vocab[species]], dtype=torch.long, device=device)
+        return True, track_names, species_ids
+
+    if species not in config.bigwigs_per_species:
+        raise ValueError("Species '{}' not in this checkpoint (have {}).".format(
+            species, sorted(config.bigwigs_per_species)))
+    track_names = list(config.bigwigs_per_species[species])
+    species_ids = torch.as_tensor(
+        model.encode_species([species]), dtype=torch.long, device=device
+    ).reshape(-1)
+    return False, track_names, species_ids
 
 
 # ---------------------------------------------------------------------------
@@ -632,8 +732,9 @@ def _aggregate(pred, track_inds, tss_output_idx, window_bp, apply_softplus, exon
     tracks and a TSS-centred ``window_bp`` window.
 
     Returns list[float] of length B (sum over the bp window and tracks).
+    ``track_inds=None`` means ``pred`` already holds only the selected tracks.
     """
-    sig = pred[:, :, track_inds]          # (B, L_pred, n_tracks)
+    sig = pred if track_inds is None else pred[:, :, track_inds]  # (B, L_pred, n_tracks)
     if apply_softplus:
         sig = torch.nn.functional.softplus(sig)
     if exon_out:
@@ -652,18 +753,28 @@ def _aggregate(pred, track_inds, tss_output_idx, window_bp, apply_softplus, exon
 
 def _predict(model, species_ids_template, x_onehot, track_inds_tensor,
              tss_output_idx, window_bp, apply_softplus, device, autocast_dtype,
-             exon_out=None):
+             exon_out=None, is_revised=False, softmask=None):
     """Forward x through NTv3 and aggregate to a scalar per batch row.
 
     ``species_ids_template`` is a 1-D long tensor of shape (1,); the model
-    expects ``species_ids`` shape (B,), so we expand (not unsqueeze) along the
-    batch dim.
+    expects one id per batch row, so we expand (not unsqueeze) along the
+    batch dim. ``softmask`` is a (L,) bool tensor shared by every row.
     """
     tokens = onehot_to_ntv3_tokens(x_onehot, device)             # (B, L) on device
+    if softmask is not None:
+        tokens = tokens + NTV3_LOWERCASE_OFFSET * softmask.to(device).long()[None, :]
     B = tokens.shape[0]
     species_ids = species_ids_template[:1].expand(B).contiguous()  # (B,)
     with torch.no_grad(), _autocast_ctx(device, autocast_dtype):
-        out = model(input_ids=tokens, species_ids=species_ids)
+        if is_revised:
+            # Only the selected track columns are computed (same numbers as
+            # slicing the full 7,362-track output, far less memory).
+            out = model(input_ids=tokens, conditions_tokens=[species_ids],
+                        track_indices=track_inds_tensor,
+                        skip_bed_head=True, skip_lm_head=True)
+            track_inds_tensor = None
+        else:
+            out = model(input_ids=tokens, species_ids=species_ids)
         pred = out["bigwig_tracks_logits"]                       # (B, L_pred, T)
     return _aggregate(pred, track_inds_tensor, tss_output_idx, window_bp,
                       apply_softplus, exon_out=exon_out)
@@ -788,27 +899,20 @@ def main():
     model, tokenizer, config = load_ntv3(args.model_name, device)
     model_name_tag = re.sub(r"[^\w\-.]+", "_", args.model_name)
 
-    if args.species not in config.bigwigs_per_species:
-        raise ValueError(
-            "Species '{}' not in cfg.bigwigs_per_species (have {}).".format(
-                args.species, list(config.bigwigs_per_species.keys())
-            )
-        )
-    ntv3_track_names = list(config.bigwigs_per_species[args.species])
+    # ---- Release-specific track list + species token ---------------------
+    is_revised, ntv3_track_names, species_ids = ntv3_release_spec(
+        model, config, args.species, device
+    )
+    use_softmask = is_revised and not args.no_softmask
+    print("NTv3 release: {}  |  soft-masked input: {}".format(
+        "revised (2026)" if is_revised else "initial (2025)", use_softmask))
     print("NTv3 has {} {} BigWig tracks.".format(len(ntv3_track_names), args.species))
+    fasta = pysam.FastaFile(get_genome(build=args.genome_build)) if use_softmask else None
 
     # ---- Track selection -------------------------------------------------
     track_inds, track_desc = _resolve_track_indices(args, ntv3_track_names)
     print("Track selection: {}".format(track_desc))
     track_inds_tensor = torch.as_tensor(track_inds, dtype=torch.long, device=device)
-
-    # ---- Species token ---------------------------------------------------
-    species_ids = model.encode_species([args.species])
-    species_ids = species_ids.to(device) if torch.is_tensor(species_ids) else torch.as_tensor(
-        species_ids, dtype=torch.long, device=device
-    )
-    if species_ids.dim() != 1:
-        species_ids = species_ids.reshape(-1)
 
     # ---- Dataset ---------------------------------------------------------
     if NTV3_SEQ_LEN % NTV3_PAD_MULTIPLE != 0:
@@ -900,11 +1004,12 @@ def main():
     all_debug_crispri_min = []
     all_debug_crispri_max = []
 
-    def _predict_batch(x_batch, tss_output_idx, exon_out=None):
+    def _predict_batch(x_batch, tss_output_idx, exon_out=None, softmask=None):
         return _predict(
             model, species_ids, x_batch, track_inds_tensor,
             tss_output_idx, args.window_bp, args.apply_softplus,
             device, args.autocast_dtype, exon_out=exon_out,
+            is_revised=is_revised, softmask=softmask,
         )
 
     for batch in tqdm(dataloader, total=len(dataloader)):
@@ -919,16 +1024,25 @@ def main():
         tss_seq_idx = _tss_seq_index_from_batch(batch)
         tss_output_idx, _ = _tss_output_index(tss_seq_idx, seq_len=NTV3_SEQ_LEN)
 
+        # Window coordinates, as FulcoDataset built them (TSS-centred, no shift).
+        tss_i = int(batch["tss"].item()) if torch.is_tensor(batch["tss"]) else int(batch["tss"])
+        strand_i = int(batch["strand"].item()) if torch.is_tensor(batch["strand"]) else int(batch["strand"])
+        chrom_v = (
+            batch["enh_loc"].split(":")[0]
+            if isinstance(batch["enh_loc"], str) else str(batch["enh_loc"])
+        )
+        seq_start = tss_i - NTV3_SEQ_LEN // 2
+
+        softmask = None
+        if use_softmask:
+            softmask = window_softmask(
+                fasta, chrom_v, seq_start, NTV3_SEQ_LEN, strand_i,
+                onehot_to_ntv3_tokens(x_wt, "cpu")[0].numpy(),
+            )
+
         # RNA-Seq: map this gene's GENCODE exons into NTv3's output crop.
         exon_out = None
         if exon_coords is not None:
-            tss_i = int(batch["tss"].item()) if torch.is_tensor(batch["tss"]) else int(batch["tss"])
-            strand_i = int(batch["strand"].item()) if torch.is_tensor(batch["strand"]) else int(batch["strand"])
-            chrom_v = (
-                batch["enh_loc"].split(":")[0]
-                if isinstance(batch["enh_loc"], str) else str(batch["enh_loc"])
-            )
-            seq_start = tss_i - NTV3_SEQ_LEN // 2
             exon_in = _exon_seq_indices(
                 batch["gene_id"], exon_coords, chrom_v, seq_start, NTV3_SEQ_LEN, strand_i
             )
@@ -936,12 +1050,14 @@ def main():
             if not exon_out:
                 exon_out = None  # no exon bp landed in the crop -> TSS-window fallback
 
-        pred_wt = _predict_batch(x_wt, tss_output_idx, exon_out)[0]
+        pred_wt = _predict_batch(x_wt, tss_output_idx, exon_out, softmask)[0]
 
         pred_crispri_list = []
         bs = max(1, int(args.shuffle_batch_size))
         for i in range(0, x_crispri.shape[0], bs):
-            pred_crispri_list.extend(_predict_batch(x_crispri[i : i + bs], tss_output_idx, exon_out))
+            pred_crispri_list.extend(
+                _predict_batch(x_crispri[i : i + bs], tss_output_idx, exon_out, softmask)
+            )
 
         pred_crispri_mean = sum(pred_crispri_list) / len(pred_crispri_list)
         pred_crispri_std = float(np.std(pred_crispri_list))
@@ -1060,6 +1176,10 @@ def main():
         f.write("-" * 80 + "\n")
         f.write("Model name:        {}\n".format(args.model_name))
         f.write("Species:           {}\n".format(args.species))
+        f.write("Release:           {}\n".format(
+            "revised (2026)" if is_revised else "initial (2025)"))
+        f.write("Soft-masked input: {}\n".format(use_softmask))
+        f.write("Autocast:          {}\n".format(args.autocast_dtype or "off (fp32)"))
         f.write("\nEVALUATION PARAMETERS\n")
         f.write("-" * 80 + "\n")
         f.write("Context window:    {:,} bp\n".format(NTV3_SEQ_LEN))
@@ -1068,7 +1188,10 @@ def main():
             int(NTV3_SEQ_LEN * NTV3_PRED_OFFSET_FRACTION),
             int(NTV3_SEQ_LEN * NTV3_PRED_OFFSET_FRACTION) + int(NTV3_SEQ_LEN * NTV3_PRED_CENTER_FRACTION),
         ))
-        f.write("TSS-centred window: {} bp (--window_bp)\n".format(args.window_bp))
+        f.write("Readout:           exon mean for {} / {} pairs; TSS-centred {} bp "
+                "window (--window_bp) for the rest\n".format(
+                    sum(1 for e in all_debug_exon_bp if e), len(all_debug_exon_bp),
+                    args.window_bp))
         f.write("Apply softplus:    {}\n".format(args.apply_softplus))
         f.write("Score mode:        {}\n".format(args.score_mode))
         f.write("Genome build:      {}\n".format(args.genome_build))
