@@ -21,8 +21,15 @@ Four models are supported out of the box:
 |-------------|---------------------------------------------|----------|------------|
 | Enformer    | HuggingFace `EleutherAI/enformer-official-rough` | 196,608 bp | 128 bp |
 | Borzoi / Flashzoi | HuggingFace `johahi/borzoi-replicate-{0..3}` (`flashzoi-...`) | 524,288 bp | 32 bp |
-| NTv3        | HuggingFace `InstaDeepAI/NTv3_650M_post`         | 1,048,576 bp | 1 bp |
+| NTv3        | HuggingFace `InstaDeepAI/NTv3_tracks_1mb` (gated, see below) | 1,048,576 bp | 1 bp |
 | AlphaGenome | HuggingFace `gtca/alphagenome_pytorch` (auto-downloaded via `huggingface_hub`)        | 1,048,576 bp | 1 bp |
+
+NTv3 defaults to the revised release (`NTv3_tracks_1mb`, Oct 2026), the 1 Mb
+model behind the NTv3 paper's results. Its weights are gated: request access on
+the HuggingFace model page (one approval covers every revised NTv3 model). The
+revised model reads soft-masked DNA, so repeat-masked (lowercase) hg38 bases are
+passed as lowercase tokens. The initial release (`InstaDeepAI/NTv3_650M_post`,
+Dec 2025) is still supported via `--model_name InstaDeepAI/NTv3_650M_post`.
 
 For each enhancer-gene pair, the model scores the wild-type sequence centred on
 the gene's TSS, then scores `N` dinucleotide-shuffled negatives in which the
@@ -113,12 +120,20 @@ python scripts/test_gasperini_enformer.py
 # Borzoi    -- Fulco, K562 RNA-Seq (default), ~30 min on one A100
 python scripts/test_fulco_borzoi.py
 
-# NTv3      -- Fulco, K562 RNA-Seq (ENCSR056HPM demo track), bf16 for memory
-python scripts/test_fulco_ntv3.py --autocast_dtype bf16
+# NTv3      -- Fulco, 86 K562 RNA-Seq tracks (default), fp32
+python scripts/test_fulco_ntv3.py
 
 # AlphaGenome -- Gasperini, K562 RNA-Seq with GENCODE exon aggregation
 python scripts/test_gasperini_alphagenome.py
 ```
+
+> **Precision.** Run NTv3 in fp32, the default (leave `--autocast_dtype`
+> unset). The published NTv3 results are fp32. The score is a small difference
+> between the wild-type and shuffled predictions, and eager `torch.autocast`
+> bf16 introduces errors of the same size: in our tests on AlphaGenome, eager
+> bf16 shifted in-silico perturbation effects by ~30% (median, relative to
+> fp32) and flipped the sign of ~20% of them. We ran NTv3 in fp32 on one 80 GB
+> H100.
 
 Each script writes:
 ```
@@ -194,7 +209,7 @@ genome once before launching the array to avoid concurrent-download races).
 python scripts/plot_fulco_results.py \
     --results ./results/test_Fulco_enformer/Fulco_base_enformer_results.csv \
               ./results/test_Fulco_borzoi/Fulco_Borzoi_base_flashzoi_rna_results.csv \
-              ./results/test_Fulco_ntv3/Fulco_NTv3_InstaDeepAI_NTv3_650M_post_rna_results.csv \
+              ./results/test_Fulco_ntv3/Fulco_NTv3_InstaDeepAI_NTv3_tracks_1mb_rna_results.csv \
               ./results/test_Fulco_alphagenome/Fulco_AlphaGenome_base_rna_seq_results.csv \
     --labels "Enformer" "Borzoi" "NTv3" "AlphaGenome" \
     --max_width_subplots 4 \

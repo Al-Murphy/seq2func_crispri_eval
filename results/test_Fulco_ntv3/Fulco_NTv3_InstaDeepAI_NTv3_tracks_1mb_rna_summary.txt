@@ -1,0 +1,39 @@
+================================================================================
+FULCO BENCHMARK SUMMARY -- NTv3
+================================================================================
+
+MODEL INFORMATION
+--------------------------------------------------------------------------------
+Model name:        InstaDeepAI/NTv3_tracks_1mb
+Species:           human
+Release:           revised (2026)
+Soft-masked input: True
+Autocast:          off (fp32)
+
+EVALUATION PARAMETERS
+--------------------------------------------------------------------------------
+Context window:    1,048,576 bp
+Output crop:       middle 37.5% of input (327680..720896 bp of input window)
+Readout:           exon mean for 63 / 63 pairs; TSS-centred 640 bp window (--window_bp) for the rest
+Apply softplus:    False
+Score mode:        linear_frac
+Genome build:      hg38
+Fulco data path:   ./metadata/fulco/
+Gene TSS CSV:      ./metadata/Gasperini_gene_tss_hg38_biomart_GRCh38_p14.csv
+Validated only:    True
+N shuffles:        50
+Enhancer window:   2000 bp
+Target cell line:  K562
+Target assay:      RNA
+Tracks:            86 K562 RNA demo tracks: ENCSR000AEL_M, ENCSR000AEL_P, ENCSR000AEM_M, ENCSR000AEM_P, ENCSR000AEN_M, ENCSR000AEN_P, ENCSR000AEP, ENCSR000AEQ, ENCSR000CPY_M, ENCSR000CPY_P, ENCSR000CPZ_M, ENCSR000CPZ_P, ENCSR000CQA_M, ENCSR000CQA_P, ENCSR000CWG, ENCSR000CWH, ENCSR000CWI, ENCSR000CWJ, ENCSR000EYO, ENCSR006EBD, ENCSR038WEK_M, ENCSR038WEK_P, ENCSR040YBR_M, ENCSR040YBR_P, ENCSR056HPM, ENCSR062FHL, ENCSR100JNS, ENCSR100VUY, ENCSR105NQB, ENCSR109IQO_M, ENCSR109IQO_P, ENCSR114LNC, ENCSR115PIZ, ENCSR124KOZ, ENCSR161RSX, ENCSR165EQJ, ENCSR195JRH, ENCSR206KFV, ENCSR223DWL, ENCSR264IXQ, ENCSR287DHQ, ENCSR303IRE, ENCSR325BJP, ENCSR340QZY, ENCSR369MDF, ENCSR379BAF, ENCSR384ZXD_M, ENCSR384ZXD_P, ENCSR451LDB, ENCSR492KRY, ENCSR518BSQ, ENCSR530NHO_M, ENCSR530NHO_P, ENCSR563ZWI, ENCSR594NJP_M, ENCSR594NJP_P, ENCSR596ACL_M, ENCSR596ACL_P, ENCSR601DZY, ENCSR615EEK_M, ENCSR615EEK_P, ENCSR637VLS_M, ENCSR637VLS_P, ENCSR672NDZ, ENCSR689NPY, ENCSR693JOK, ENCSR696YIB_M, ENCSR696YIB_P, ENCSR733QST, ENCSR738ZHN, ENCSR758BAT, ENCSR792OIJ_M, ENCSR792OIJ_P, ENCSR806HCA, ENCSR810ZKJ, ENCSR844RSF, ENCSR860DWK_M, ENCSR860DWK_P, ENCSR866UOA, ENCSR882NWV, ENCSR885DVH_M, ENCSR885DVH_P, ENCSR900IJI, ENCSR949BBZ, ENCSR950YTM, ENCSR957GVE
+Fulco subset:      knockdown_only
+
+RESULTS
+--------------------------------------------------------------------------------
+Pairs evaluated:                 63
+Pairs used for Pearson/Spearman: 63
+Pearson r  (pred_delta):  0.5113  (p=1.85e-05)
+Spearman r (pred_delta):  0.2657  (p=3.53e-02)
+Pearson r  (log2 softplus):  0.5233  (p=1.08e-05)
+Spearman r (log2 softplus):  0.2657  (p=3.53e-02)
+================================================================================
