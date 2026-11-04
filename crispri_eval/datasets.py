@@ -378,11 +378,22 @@ class GasperiniDataset(torch.utils.data.Dataset):
         return meta
 
 
-def _fulco_ensembl_lookup_symbols(symbols, genome_build="hg38"):
+def _fulco_ensembl_lookup_symbols(symbols, genome_build="hg38", cache_csv=None):
     """
     Map HGNC symbols to Ensembl gene IDs and strand via Ensembl REST (used when
     ``ziga_additional_columns.tsv`` has ``Gene`` but no ``gene_id``, as in Karollus Zenodo).
+
+    Resolved symbols are kept in ``cache_csv`` (if given) and only symbols missing
+    from it are queried, so runs stop depending on Ensembl REST being up: a failed
+    lookup otherwise drops that gene's pairs from the benchmark.
     """
+    cached = None
+    if cache_csv is not None and os.path.exists(cache_csv):
+        cached = pd.read_csv(cache_csv)
+        known = set(cached["resolved_symbol"].astype(str))
+        symbols = [s for s in symbols if str(s).strip() not in known]
+        print("Ensembl lookup cache {}: {} symbols cached, {} to query.".format(
+            cache_csv, len(known), len(symbols)))
     # Ensembl /lookup/symbol rejects some legacy table symbols (HTTP 400); try HGNC-preferred alias.
     symbol_aliases = {
         "H1FX": "H1-10",
@@ -433,12 +444,17 @@ def _fulco_ensembl_lookup_symbols(symbols, genome_build="hg38"):
         except Exception as exc:
             warnings.warn("Ensembl lookup failed for {!r}: {}".format(sym, exc))
         time.sleep(0.07)
-    if not rows:
+    lookups = pd.DataFrame(rows, columns=["resolved_symbol", "Gene stable ID", "Strand_ensembl"])
+    if cached is not None:
+        lookups = pd.concat([cached, lookups], ignore_index=True)
+    if cache_csv is not None and rows:
+        lookups.to_csv(cache_csv, index=False)
+    if lookups.empty:
         raise RuntimeError(
             "Could not resolve any gene symbols via Ensembl REST. "
             "Add a ``gene_id`` / ``Gene stable ID`` column to ziga, or check network / symbols."
         )
-    return pd.DataFrame(rows)
+    return lookups
 
 
 class FulcoDataset(torch.utils.data.Dataset):
@@ -591,6 +607,9 @@ class FulcoDataset(torch.utils.data.Dataset):
             sym_df = _fulco_ensembl_lookup_symbols(
                 self.crispri_data[sym_col].dropna().unique().tolist(),
                 genome_build=self.genome_build,
+                cache_csv=os.path.join(
+                    self.data_path, "ensembl_symbol_lookup_{}.csv".format(self.genome_build)
+                ),
             )
             self.crispri_data = self.crispri_data.merge(
                 sym_df, left_on=sym_col, right_on="resolved_symbol", how="inner"
