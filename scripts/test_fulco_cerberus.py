@@ -43,6 +43,10 @@ Usage:
 
     # Quick check on one gene with two replicates
     python scripts/test_fulco_cerberus.py --cerberus_dir ... --gene PQBP1 --folds 0 1
+
+    # One of 2 shards (fp32 is ~4 min per pair on an H100); merge each track set
+    # with scripts/merge_tta_shards.py --fulco_corr_observed_subset knockdown_only
+    python scripts/test_fulco_cerberus.py --cerberus_dir ... --num_shards 2 --shard_idx 0
 """
 
 import argparse
@@ -190,6 +194,14 @@ def parse_args():
         "--gene", type=str, default=None,
         help="Optional: restrict evaluation to pairs for this 'target_gene_short'.",
     )
+    p.add_argument(
+        "--num_shards", type=int, default=1,
+        help="Split the enhancer-gene pairs into this many strided shards (for cluster arrays).",
+    )
+    p.add_argument(
+        "--shard_idx", type=int, default=0,
+        help="0-based shard index in [0, num_shards). Each shard processes pairs[shard_idx::num_shards].",
+    )
 
     # -- Output ---------------------------------------------------------------
     p.add_argument(
@@ -221,6 +233,10 @@ def parse_args():
     args = p.parse_args()
     if not all(0 <= f < CERBERUS_NUM_FOLDS for f in args.folds):
         p.error("--folds must be in [0, {})".format(CERBERUS_NUM_FOLDS))
+    if args.num_shards < 1:
+        p.error("--num_shards must be >= 1")
+    if not (0 <= args.shard_idx < args.num_shards):
+        p.error("--shard_idx must be in [0, num_shards)")
     return args
 
 
@@ -398,6 +414,16 @@ def main():
                 "No Fulco pairs found for gene '{}'.".format(args.gene)
             )
 
+    # ---- Shard the pairs (for SLURM array parallelisation) ------------------
+    if args.num_shards > 1:
+        n_all = len(dataset.crispri_data)
+        dataset.crispri_data = (
+            dataset.crispri_data.iloc[args.shard_idx::args.num_shards].reset_index(drop=True)
+        )
+        print("Shard {}/{}: {} of {} pairs".format(
+            args.shard_idx, args.num_shards, len(dataset.crispri_data), n_all
+        ))
+
     dataloader = DataLoader(
         dataset,
         shuffle=False,
@@ -456,7 +482,11 @@ def main():
     all_crispri_mean = np.stack(all_crispri_mean)
 
     base_prefix = args.output_prefix or "Fulco_Cerberus"
-    npz_path = os.path.join(args.save_path, "{}_per_track.npz".format(base_prefix))
+    shard_tag = (
+        "_shard{:03d}of{:03d}".format(args.shard_idx, args.num_shards)
+        if args.num_shards > 1 else ""
+    )
+    npz_path = os.path.join(args.save_path, "{}{}_per_track.npz".format(base_prefix, shard_tag))
     np.savez_compressed(
         npz_path,
         pred_wt=all_wt,
@@ -487,6 +517,18 @@ def main():
             df_results["debug_crispri_std_alltracks"] = all_crispri_std
 
         output_prefix = "{}_{}".format(base_prefix, name)
+        # In sharded mode, write only this shard's per-pair CSV; the merge step
+        # (scripts/merge_tta_shards.py --fulco_corr_observed_subset ...) concatenates
+        # shards and computes correlations.
+        if args.num_shards > 1:
+            shard_csv = os.path.join(
+                args.save_path, "{}{}_results.csv".format(output_prefix, shard_tag)
+            )
+            df_results.to_csv(shard_csv, index=False)
+            print("Shard {}/{} '{}' results saved to: {}".format(
+                args.shard_idx, args.num_shards, name, shard_csv))
+            out[name] = df_results
+            continue
         out[name] = _report_and_save(df_results, output_prefix, name, len(idx), args)
     return out
 
