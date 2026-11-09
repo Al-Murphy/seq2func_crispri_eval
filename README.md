@@ -15,14 +15,25 @@ genomic deep-learning models on two pooled CRISPRi screens:
   release.
 - **[Gasperini et al. 2019](https://pubmed.ncbi.nlm.nih.gov/30612741/)** high-confidence enhancer-gene pairs.
 
-Four models are supported out of the box:
+Five models are supported out of the box:
 
 | Model       | Backbone source                             | Context  | Output res |
 |-------------|---------------------------------------------|----------|------------|
 | Enformer    | HuggingFace `EleutherAI/enformer-official-rough` | 196,608 bp | 128 bp |
 | Borzoi / Flashzoi | HuggingFace `johahi/borzoi-replicate-{0..3}` (`flashzoi-...`) | 524,288 bp | 32 bp |
+| Cerberus    | [calico/baskerville](https://github.com/calico/baskerville) `releases/cerberus` (8 replicates, see below) | 786,432 bp | 32 bp |
 | NTv3        | HuggingFace `InstaDeepAI/NTv3_tracks_1mb` (gated, see below) | 1,048,576 bp | 1 bp |
 | AlphaGenome | HuggingFace `gtca/alphagenome_pytorch` (auto-downloaded via `huggingface_hub`)        | 1,048,576 bp | 1 bp |
+
+Cerberus (Calico, Oct 2026) is Borzoi's successor: Borzoi's transformer and
+U-net are replaced by bidirectional Mamba-2 (Hydra) blocks. It is released as 8
+replicate models, each holding out a different fold, and every pair is scored
+with all 8 (`pred_wt` and `pred_crispri_mean` are averaged across replicates
+before `pred_delta`). The readout matches the Borzoi scripts: K562 RNA-Seq
+tracks summed over 21 × 32 bp bins centred on the TSS. Two track sets come out
+of the same forward passes: `rna`, the 94 K562 RNA-Seq tracks Borzoi uses
+(matched by ENCODE identifier), and `rna_allk562`, all 160 K562 RNA tracks
+(adds recount3 4sU / TT-seq nascent RNA and actinomycin D shutoff tracks).
 
 NTv3 defaults to the revised release (`NTv3_tracks_1mb`, Oct 2026), the 1 Mb
 model behind the NTv3 paper's results. Its weights are gated: request access on
@@ -53,6 +64,7 @@ seq2func_crispri_eval/
 ├── scripts/                  # One self-contained script per (dataset × model)
 │   ├── test_fulco_enformer.py        scripts/test_gasperini_enformer.py
 │   ├── test_fulco_borzoi.py          scripts/test_gasperini_borzoi.py
+│   ├── test_fulco_cerberus.py        scripts/test_gasperini_cerberus.py
 │   ├── test_fulco_ntv3.py            scripts/test_gasperini_ntv3.py
 │   ├── test_fulco_alphagenome.py     scripts/test_gasperini_alphagenome.py
 │   ├── plot_fulco_results.py         scripts/plot_gasperini_results.py
@@ -67,11 +79,12 @@ seq2func_crispri_eval/
 │   ├── Gasperini_enh_hg38_ucscLiftOver.bed
 │   ├── Gasperini_sign_enhancer_gene_pairs.csv
 │   ├── borzoi_human_targets.txt    # Borzoi K562 RNA / CAGE indices
+│   ├── cerberus_human_targets.txt  # Cerberus human track list
 │   ├── track_metadata.parquet      # AlphaGenome K562 indices
 │   ├── Fulco_gene_exons_hg38.csv   # AlphaGenome RNA-seq exon aggregation
 │   └── Gasperini_gene_exons_hg38.csv
 │
-├── examples/run_all.sh       # End-to-end launch script (8 evals + 2 plots)
+├── examples/run_all.sh       # End-to-end launch script (10 evals + 2 plots)
 ├── tests/                    # pytest suite (smoke + unit + metadata integrity)
 ├── pyproject.toml            # pytest config
 ├── requirements.txt
@@ -104,6 +117,13 @@ pip install transformers         # NTv3
 pip install alphagenome-pytorch huggingface_hub  # AlphaGenome
 ```
 
+Cerberus needs its own environment: torch >=2.11,<2.14 and `mamba-ssm`
+(Triton kernels), installed through calico/baskerville. Follow the baskerville
+README, install this repo into that environment (`pip install -e .`), download
+the weights (`cd baskerville/releases/cerberus && ./download.sh`, 4.2 GB for the
+8 replicates), then point the scripts at that directory with `--cerberus_dir`
+or `export CERBERUS_DIR=/path/to/baskerville/releases/cerberus`.
+
 The first run will download a reference genome to `./.cache/` via `pysam`
 (~3 GB for hg38). Subsequent runs reuse it.
 
@@ -120,6 +140,10 @@ python scripts/test_gasperini_enformer.py
 # Borzoi    -- Fulco, K562 RNA-Seq (default), ~30 min on one A100
 python scripts/test_fulco_borzoi.py
 
+# Cerberus  -- Fulco, 94 (+160) K562 RNA-Seq tracks x 8 replicates, fp32,
+#              ~3 min per pair on one H100 (shard it, see the script docstring)
+python scripts/test_fulco_cerberus.py --cerberus_dir $CERBERUS_DIR
+
 # NTv3      -- Fulco, 86 K562 RNA-Seq tracks (default), fp32
 python scripts/test_fulco_ntv3.py
 
@@ -127,13 +151,13 @@ python scripts/test_fulco_ntv3.py
 python scripts/test_gasperini_alphagenome.py
 ```
 
-> **Precision.** Run NTv3 in fp32, the default (leave `--autocast_dtype`
-> unset). The published NTv3 results are fp32. The score is a small difference
+> **Precision.** Run NTv3 and Cerberus in fp32, the default (leave
+> `--autocast_dtype` unset). The published NTv3 and Cerberus results are fp32. The score is a small difference
 > between the wild-type and shuffled predictions, and eager `torch.autocast`
 > bf16 introduces errors of the same size: in our tests on AlphaGenome, eager
 > bf16 shifted in-silico perturbation effects by ~30% (median, relative to
-> fp32) and flipped the sign of ~20% of them. We ran NTv3 in fp32 on one 80 GB
-> H100.
+> fp32) and flipped the sign of ~20% of them. We ran NTv3 and Cerberus in fp32
+> on one 80 GB H100.
 
 Each script writes:
 ```
@@ -146,7 +170,7 @@ combination of results files.
 
 ---
 
-## Running all four models + plotting
+## Running all five models + plotting
 
 A reference script chains the full pipeline:
 
@@ -240,14 +264,14 @@ A new model needs **one script** in `scripts/test_<dataset>_<model>.py` that:
    Optional but recommended: `pred_wt`, `pred_crispri_mean` (enables the
    log2-fold-change plots).
 
-The four existing test scripts are intentionally parallel — diff
+The existing test scripts are intentionally parallel — diff
 `test_fulco_enformer.py` against your draft to spot missing pieces. The
 **only shared code** is the dataset, so each script is the ground truth for
 that model's preprocessing and aggregation choices.
 
 For shared eval-loop scaffolding (correlation, summary writing) we kept the
 duplication on purpose: each script is self-contained so a reader can audit
-one model's evaluation without chasing imports. If you add a fifth model and
+one model's evaluation without chasing imports. If you add another model and
 find yourself copy-pasting more than ~40 lines of glue, consider lifting a
 helper into `crispri_eval/`.
 
@@ -278,6 +302,7 @@ larger raw data are not committed:
 | Fulco `ziga_additional_columns.tsv` | same Zenodo, Karollus pipeline | `FulcoDataset` (shipped) |
 | Gasperini significant pairs CSV / BED / TSS | Gasperini et al. (2019) supplement + UCSC liftover | `GasperiniDataset` (shipped) |
 | Borzoi `targets_human.txt` | [calico/borzoi](https://github.com/calico/borzoi) `examples/targets_human.txt` | `*_borzoi.py` (shipped) |
+| Cerberus `targets_human.txt` | [calico/baskerville](https://github.com/calico/baskerville) `releases/cerberus/targets_human.txt` | `*_cerberus.py` (shipped as `cerberus_human_targets.txt`) |
 | AlphaGenome `track_metadata.parquet` | [alphagenome-pytorch](https://github.com/lucidrains/alphagenome) `scripts/extract_track_metadata.py` | `*_alphagenome.py` (shipped) |
 | Reference genome (hg38) | UCSC, fetched on-demand by `pysam` | all (auto-downloaded to `./.cache/`) |
 | Exon CSVs (`Fulco_gene_exons_hg38.csv`, `Gasperini_gene_exons_hg38.csv`) | Ensembl REST API | `*_alphagenome.py` (shipped; regenerated on first run if absent) |
@@ -292,7 +317,7 @@ If you use this benchmark, please cite the underlying CRISPRi datasets:
 - Fulco CP et al., *Nat Genet* 51 (2019), DOI 10.1038/s41588-019-0538-0
 - Gasperini M et al., *Cell* 176 (2019), DOI 10.1016/j.cell.2018.11.029
 
-…and the models you evaluate (Enformer / Borzoi / NTv3 / AlphaGenome).
+…and the models you evaluate (Enformer / Borzoi / Cerberus / NTv3 / AlphaGenome).
 
 ## License
 
