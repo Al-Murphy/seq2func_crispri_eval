@@ -44,7 +44,7 @@ Usage:
     # Quick check on one gene with two replicates
     python scripts/test_fulco_cerberus.py --cerberus_dir ... --gene PQBP1 --folds 0 1
 
-    # One of 2 shards (fp32 is ~4 min per pair on an H100); merge each track set
+    # One of 2 shards (fp32 is ~3 min per pair on an H100); merge each track set
     # with scripts/merge_tta_shards.py --fulco_corr_observed_subset knockdown_only
     python scripts/test_fulco_cerberus.py --cerberus_dir ... --num_shards 2 --shard_idx 0
 """

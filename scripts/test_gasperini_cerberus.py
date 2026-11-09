@@ -15,8 +15,8 @@ Usage:
     python scripts/test_gasperini_cerberus.py \\
         --cerberus_dir /path/to/baskerville/releases/cerberus
 
-    # One of 8 shards
-    python scripts/test_gasperini_cerberus.py --cerberus_dir ... --num_shards 8 --shard_idx 0
+    # One of 12 shards (fp32 is ~3 min per pair on an H100, ~21 GPU-h in total)
+    python scripts/test_gasperini_cerberus.py --cerberus_dir ... --num_shards 12 --shard_idx 0
 """
 
 import argparse
