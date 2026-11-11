@@ -6,12 +6,17 @@ validated enhancer-gene CRISPRi pairs.
 Base-model evaluation only. See README for adding new models.
 
 See ``test_fulco_borzoi.py`` for a long-form explanation of Borzoi's bin
-resolution, K562 track selection, and aggregation conventions. This script
-differs only in the dataset (Gasperini vs Fulco).
+resolution, K562 track selection, and the ``--readout`` options (``exon``, the
+default for RNA: strand-matched, untransformed coverage summed over the gene's
+exon bins; ``tss``: the transformed TSS window). This script differs only in the
+dataset (Gasperini vs Fulco).
 
 Usage:
-    # Base model, RNA-Seq K562
+    # Base model, RNA-Seq K562 (exon readout)
     python scripts/test_gasperini_borzoi.py
+
+    # Previous readout: TSS window, transformed units (writes *_rna_tss_*)
+    python scripts/test_gasperini_borzoi.py --readout tss
 
     # Base model, CAGE K562
     python scripts/test_gasperini_borzoi.py --target_assay CAGE
@@ -31,6 +36,7 @@ from scipy.stats import pearsonr, spearmanr
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from crispri_eval import readouts
 from crispri_eval.datasets import GasperiniDataset
 
 
@@ -106,6 +112,18 @@ def parse_args():
             )
         ),
     )
+    p.add_argument(
+        "--readout", type=str, default=None, choices=["exon", "tss"],
+        help=(
+            "Gene readout. 'exon' (default for RNA): strand-matched tracks, untransformed, "
+            "summed over the gene's exon bins. 'tss' (default for CAGE): all selected "
+            "tracks, transformed units, summed over --num_central_bins around the TSS."
+        ),
+    )
+    p.add_argument(
+        "--exon_csv", type=str, default="./metadata/Gasperini_gene_exons_hg38.csv",
+        help="Exon table [gene_id, chrom, start, end] (0-based half-open) for --readout exon.",
+    )
 
     p.add_argument(
         "--shuffle_batch_size", type=int, default=2,
@@ -153,6 +171,9 @@ def parse_args():
     )
 
     args = p.parse_args()
+
+    if args.readout is None:
+        args.readout = "exon" if args.target_assay == "RNA" else "tss"
 
     if args.use_flashzoi and args.autocast_dtype is None:
         print("--use_flashzoi: defaulting --autocast_dtype to bf16 (required by FlashAttention).")
@@ -220,16 +241,26 @@ def _to_borzoi_input(x):
     return x.permute(0, 2, 1).contiguous()
 
 
-def _aggregate_predictions(pred, track_inds, tss_bin, central_bins):
-    """Aggregate Borzoi output (B, C, 6144) over a track subset and TSS-centred bin window."""
+def _tss_window_bins(tss_bin, central_bins, n_bins=BORZOI_NUM_BINS):
+    """Output bins of the TSS window: ``central_bins // 2`` either side of ``tss_bin``."""
+    bin_offset = central_bins // 2
+    return np.arange(max(0, tss_bin - bin_offset), min(n_bins, tss_bin + bin_offset + 1))
+
+
+def _aggregate_bins(pred, track_inds, bins, untransform=None):
+    """Sum Borzoi output (B, C, 6144) over a track subset and output bins (LongTensor)."""
     if track_inds is not None:
         pred = pred[:, track_inds, :]
-    n_bins = pred.shape[-1]
-    bin_offset = central_bins // 2
-    lo = max(0, tss_bin - bin_offset)
-    hi = min(n_bins, tss_bin + bin_offset + 1)
-    pred_central = pred[:, :, lo:hi]
-    return pred_central.sum(dim=(1, 2)).tolist()
+    if untransform is not None:
+        pred = untransform(pred)
+    return pred[:, :, bins].sum(dim=(1, 2)).tolist()
+
+
+def _aggregate_predictions(pred, track_inds, tss_bin, central_bins):
+    """Aggregate Borzoi output (B, C, 6144) over a track subset and TSS-centred bin window."""
+    bins = torch.as_tensor(_tss_window_bins(tss_bin, central_bins, pred.shape[-1]),
+                           dtype=torch.long, device=pred.device)
+    return _aggregate_bins(pred, track_inds, bins)
 
 
 def _autocast_ctx(device, autocast_dtype):
@@ -239,11 +270,28 @@ def _autocast_ctx(device, autocast_dtype):
     return torch.amp.autocast(device_type="cuda", dtype=dtype)
 
 
-def _predict_base(model, x, track_inds, tss_bin, central_bins, device, autocast_dtype):
+def _predict_base(model, x, track_inds, bins, device, autocast_dtype, untransform=None):
     x_dev = _to_borzoi_input(x).to(device)
     with torch.no_grad(), _autocast_ctx(device, autocast_dtype):
         out = model(x_dev, is_human=True)
-    return _aggregate_predictions(out.float(), track_inds, tss_bin, central_bins)
+    return _aggregate_bins(out.float(), track_inds, bins, untransform)
+
+
+def setup_readout(args, track_inds, track_desc, device):
+    """Resolve the readout: (track_inds, track_desc, untransform, exon_coords)."""
+    if args.readout == "tss":
+        return track_inds, track_desc, None, None
+    track_inds, untransform = readouts.borzoi_exon_setup(args.target_csv, track_inds, device)
+    track_desc += " | {} strand-matched ('+' or unstranded) used".format(len(track_inds))
+    return track_inds, track_desc, untransform, readouts.load_exon_table(args.exon_csv)
+
+
+def readout_bins(args, batch, tss_bin, exon_coords):
+    """(bins as np.ndarray, readout used) for one pair; exon falls back to the TSS window."""
+    return readouts.pair_readout_bins(
+        args.readout, batch, exon_coords, _tss_window_bins(tss_bin, args.num_central_bins),
+        BORZOI_SEQ_LEN, BORZOI_CROP_BP_PER_SIDE, BORZOI_BIN_BP, BORZOI_NUM_BINS,
+    )
 
 
 def main():
@@ -261,13 +309,23 @@ def main():
     track_inds, track_desc = get_borzoi_track_indices(
         args.target_csv, args.target_cell_line, args.target_assay
     )
+    track_inds, track_desc, untransform, exon_coords = setup_readout(
+        args, track_inds, track_desc, device
+    )
     print("Track selection ({}): {}".format(args.target_assay, track_desc))
 
     track_inds_tensor = torch.as_tensor(track_inds, dtype=torch.long, device=device)
 
-    print("Aggregation window: {} bins x {} bp = {} bp".format(
-        args.num_central_bins, BORZOI_BIN_BP, args.num_central_bins * BORZOI_BIN_BP
-    ))
+    if args.readout == "exon":
+        aggregation_desc = (
+            "exon: untransformed coverage summed over the output bins overlapping the "
+            "gene's exons ({}); TSS window of {} bins if none".format(
+                args.exon_csv, args.num_central_bins)
+        )
+    else:
+        aggregation_desc = "tss: transformed units summed over {} central bins ({} bp around TSS bin)".format(
+            args.num_central_bins, args.num_central_bins * BORZOI_BIN_BP)
+    print("Aggregation: {}".format(aggregation_desc))
 
     print("\nLoading Gasperini dataset from {}...".format(args.data_path))
     print("Sequence window: centred on gene TSS; enhancer shuffled in place.")
@@ -320,15 +378,16 @@ def main():
     all_strands = []
     all_tss_seq_index = []
     all_tss_bin = []
+    all_readout = []
+    all_n_bins = []
     all_debug_track_count = []
     all_debug_crispri_std = []
     all_debug_crispri_min = []
     all_debug_crispri_max = []
 
-    def _predict_batch(x_batch, tss_bin):
+    def _predict_batch(x_batch, bins_t):
         return _predict_base(
-            model, x_batch, track_inds_tensor, tss_bin, args.num_central_bins,
-            device, args.autocast_dtype,
+            model, x_batch, track_inds_tensor, bins_t, device, args.autocast_dtype, untransform,
         )
 
     for batch in tqdm(dataloader, total=len(dataloader)):
@@ -342,13 +401,15 @@ def main():
 
         tss_seq_idx = _tss_seq_index_from_batch(batch)
         tss_bin = _tss_bin_from_seq_index(tss_seq_idx, num_bins=BORZOI_NUM_BINS)
+        bins, readout_used = readout_bins(args, batch, tss_bin, exon_coords)
+        bins_t = torch.as_tensor(bins, dtype=torch.long, device=device)
 
-        pred_wt = _predict_batch(x_wt, tss_bin)[0]
+        pred_wt = _predict_batch(x_wt, bins_t)[0]
 
         pred_crispri_list = []
         bs = max(1, int(args.shuffle_batch_size))
         for i in range(0, x_crispri.shape[0], bs):
-            pred_crispri_list.extend(_predict_batch(x_crispri[i : i + bs], tss_bin))
+            pred_crispri_list.extend(_predict_batch(x_crispri[i : i + bs], bins_t))
 
         pred_crispri_mean = sum(pred_crispri_list) / len(pred_crispri_list)
         pred_crispri_std = float(np.std(pred_crispri_list))
@@ -369,6 +430,8 @@ def main():
         all_strands.append(batch["strand"])
         all_tss_seq_index.append(tss_seq_idx)
         all_tss_bin.append(tss_bin)
+        all_readout.append(readout_used)
+        all_n_bins.append(len(bins))
         all_debug_track_count.append(len(track_inds))
         all_debug_crispri_std.append(pred_crispri_std)
         all_debug_crispri_min.append(pred_crispri_min)
@@ -386,6 +449,8 @@ def main():
         "tss":               all_tss,
         "tss_seq_index":     all_tss_seq_index,
         "tss_bin":           all_tss_bin,
+        "readout":           all_readout,
+        "n_readout_bins":    all_n_bins,
         "strand":            all_strands,
         "enh_dist":          all_enh_dists,
         "y_delta":           all_y_deltas,
@@ -422,10 +487,17 @@ def main():
     print("  Spearman r: {:.4f}  (p={:.2e})".format(log_spr_r, log_spr_p))
     print("=" * 80)
 
+    n_full = len(df_results)
+    n_fallback = sum(r != args.readout for r in all_readout)
+    if n_fallback:
+        print("{} / {} pairs had no exon bin in the output and used the TSS window.".format(
+            n_fallback, n_full))
+
     if args.output_prefix is None:
         flash_tag = "_flashzoi" if args.use_flashzoi else ""
         assay_tag = "_{}".format(args.target_assay.lower())
-        output_prefix = "Gasperini_Borzoi_base{}{}".format(flash_tag, assay_tag)
+        readout_tag = "_tss" if (args.readout == "tss" and args.target_assay == "RNA") else ""
+        output_prefix = "Gasperini_Borzoi_base{}{}{}".format(flash_tag, assay_tag, readout_tag)
     else:
         output_prefix = args.output_prefix
 
@@ -458,9 +530,9 @@ def main():
         f.write("Target cell line:  {}\n".format(args.target_cell_line))
         f.write("Target assay:      {}\n".format(args.target_assay))
         f.write("Tracks:            {}\n".format(track_desc))
-        f.write("Aggregation:       sum over {} central bins ({} bp around TSS bin)\n".format(
-            args.num_central_bins, args.num_central_bins * BORZOI_BIN_BP
-        ))
+        f.write("Aggregation:       {}\n".format(aggregation_desc))
+        if args.readout == "exon":
+            f.write("TSS-window fallback: {} / {} pairs\n".format(n_fallback, n_full))
         f.write("Scoring:           fractional drop (pred_WT - pred_CRISPRi) / (pred_WT + eps)\n")
         f.write("\nRESULTS\n")
         f.write("-" * 80 + "\n")

@@ -16,18 +16,29 @@ replaced by 8 Hydra blocks (bidirectional Mamba-2 state space mixers) run at
     holding out a different fold. Every pair is scored with all 8 replicates;
     ``pred_wt`` and ``pred_crispri_mean`` are averaged across replicates before
     ``pred_delta`` is computed (the ``make_borzoi_ensemble.py`` recipe).
-  - Readout matches the Borzoi scripts: K562 RNA-Seq tracks summed over a
-    TSS-centred window of 32 bp bins, in the model's transformed (squashed)
-    units, forward strand only (no reverse-complement averaging).
+  - Readout (``--readout``), as in the Borzoi scripts, forward strand only (no
+    reverse-complement averaging):
+      ``exon`` (default) -- coverage converted back from the model's squashed
+        units with Calico's ``untransform_preds`` (``(y + 1)^2 - 1`` for these
+        tracks, ``unscale=False``), summed over the output bins overlapping the
+        gene's GENCODE exons (``--exon_csv``), strand-matched tracks only ('+'
+        and unstranded; minus-strand genes are reverse-complemented, so every
+        gene is on '+'). The AlphaGenome / NTv3 RNA-Seq readout and Calico's own
+        gene score. No exon bin in the window -> TSS window (``readout`` column).
+      ``tss`` -- all tracks of the set, transformed units, summed over a
+        TSS-centred window of 32 bp bins. Default prefix gains ``_tss``.
   - Two track sets are scored from the same forward passes:
       ``rna``          -- the 94 K562 RNA-Seq tracks Borzoi uses, matched by
                           ENCODE identifier against ``--borzoi_target_csv``.
       ``rna_allk562``  -- all 160 K562 RNA tracks; adds 66 recount3 tracks
                           (4sU / TT-seq nascent RNA, actinomycin D shutoff).
-  - Per-track window sums for every replicate are saved to
-    ``<prefix>_per_track.npz`` so other track subsets can be re-aggregated
-    offline without re-running the model.
-  - Runs in fp32 with TF32 disabled unless ``--autocast_dtype`` is given.
+  - Per-track sums for every replicate (all 160 tracks, before the strand
+    filter) are saved to ``<prefix>_per_track.npz`` so other track subsets can
+    be re-aggregated offline without re-running the model.
+  - Runs in fp32 unless ``--autocast_dtype`` is given. PyTorch TF32 is turned
+    off, but mamba-ssm's Triton kernels still use TF32 (set
+    ``TRITON_F32_DEFAULT=ieee`` for strict fp32: ~30% slower, and it moves
+    per-replicate pred_delta by <= 2.4e-4 here).
 
 Requires calico/baskerville installed with the ``cuda`` extra (mamba-ssm) and
 the released weights:
@@ -63,6 +74,7 @@ from scipy.stats import pearsonr, spearmanr
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from crispri_eval import readouts
 from crispri_eval.datasets import FulcoDataset
 from crispri_eval.benchmark_utils import fulco_results_for_correlation
 
@@ -136,6 +148,18 @@ def parse_args():
             "Number of 32 bp bins to aggregate around the TSS bin. Default {} "
             "(same window as the Borzoi scripts).".format(DEFAULT_CENTRAL_BINS)
         ),
+    )
+    p.add_argument(
+        "--readout", type=str, default="exon", choices=["exon", "tss"],
+        help=(
+            "Gene readout. 'exon': strand-matched tracks, untransformed, summed over the "
+            "gene's exon bins. 'tss': all tracks, transformed units, summed over "
+            "--num_central_bins around the TSS."
+        ),
+    )
+    p.add_argument(
+        "--exon_csv", type=str, default="./metadata/Fulco_gene_exons_hg38.csv",
+        help="Exon table [gene_id, chrom, start, end] (0-based half-open) for --readout exon.",
     )
 
     p.add_argument(
@@ -327,31 +351,65 @@ def _autocast_ctx(device, autocast_dtype):
     return torch.amp.autocast(device_type="cuda", dtype=dtype)
 
 
-def _predict_window_sums(model, head_index, x, track_inds, lo, hi, device, autocast_dtype):
-    """(B, L, 4) one-hot -> (B, n_tracks) coverage summed over bins [lo, hi)."""
+def _predict_window_sums(model, head_index, x, track_inds, bins, device, autocast_dtype,
+                         untransform=None):
+    """(B, L, 4) one-hot -> (B, n_tracks) coverage summed over output ``bins`` (LongTensor).
+
+    ``untransform`` maps the selected tracks back to coverage units before summing.
+    """
     x_dev = x.permute(0, 2, 1).contiguous().to(device)
     with torch.no_grad(), _autocast_ctx(device, autocast_dtype):
         out = model(x_dev, head_index)
-    return out.coverage[:, track_inds, lo:hi].float().sum(dim=2).cpu()
+    cov = out.coverage[:, track_inds, :].float()
+    if untransform is not None:
+        cov = untransform(cov)
+    return cov[:, :, bins].sum(dim=2).cpu()
 
 
-def score_pair(models, head_index, x_wt, x_crispri, track_inds, lo, hi, bs, device, autocast_dtype):
-    """Per-replicate, per-track window sums: (wt, crispri_mean, crispri_sums).
+def score_pair(models, head_index, x_wt, x_crispri, track_inds, bins, bs, device, autocast_dtype,
+               untransform=None):
+    """Per-replicate, per-track sums over ``bins``: (wt, crispri_mean, crispri_sums).
 
     wt, crispri_mean: (n_folds, n_tracks); crispri_sums: (n_folds, N, n_tracks).
     """
     wt, crispri = [], []
     for model in models:
         wt.append(_predict_window_sums(
-            model, head_index, x_wt, track_inds, lo, hi, device, autocast_dtype)[0])
+            model, head_index, x_wt, track_inds, bins, device, autocast_dtype, untransform)[0])
         crispri.append(torch.cat([
             _predict_window_sums(
-                model, head_index, x_crispri[i : i + bs], track_inds, lo, hi,
-                device, autocast_dtype)
+                model, head_index, x_crispri[i : i + bs], track_inds, bins,
+                device, autocast_dtype, untransform)
             for i in range(0, x_crispri.shape[0], bs)
         ]))
     crispri = torch.stack(crispri).numpy()
     return torch.stack(wt).numpy(), crispri.mean(axis=1), crispri
+
+
+def _tss_window_bins(tss_bin, central_bins, n_bins=CERBERUS_NUM_BINS):
+    """Output bins of the TSS window: ``central_bins // 2`` either side of ``tss_bin``."""
+    bin_offset = central_bins // 2
+    return np.arange(max(0, tss_bin - bin_offset), min(n_bins, tss_bin + bin_offset + 1))
+
+
+def setup_readout(args, track_inds, device):
+    """(strand-matched mask over the superset, untransform, exon table) for ``--readout``.
+
+    The ``tss`` readout keeps every track and the transformed units.
+    """
+    if args.readout == "tss":
+        return np.ones(len(track_inds), dtype=bool), None, None
+    sm, untransform = readouts.cerberus_exon_setup(args.target_csv, track_inds, device)
+    return sm, untransform, readouts.load_exon_table(args.exon_csv)
+
+
+def aggregation_description(args):
+    if args.readout == "exon":
+        return ("exon: untransformed coverage of strand-matched tracks summed over the output "
+                "bins overlapping the gene's exons ({}); TSS bin +/- {} bins if none".format(
+                    args.exon_csv, args.num_central_bins // 2))
+    return "tss: transformed units summed over TSS bin +/- {} bins ({} bp bins)".format(
+        args.num_central_bins // 2, CERBERUS_BIN_BP)
 
 
 # ---------------------------------------------------------------------------
@@ -378,13 +436,14 @@ def main():
     track_inds, track_sets, track_ids = get_cerberus_track_sets(
         args.target_csv, args.borzoi_target_csv, args.target_cell_line
     )
+    sm_mask, untransform, exon_coords = setup_readout(args, track_inds, device)
     for name in TRACK_SETS:
-        print("Track set '{}': {}".format(
-            name, describe_track_set(name, len(track_sets[name]), args.target_cell_line)))
+        print("Track set '{}': {}{}".format(
+            name, describe_track_set(name, len(track_sets[name]), args.target_cell_line),
+            "" if args.readout == "tss" else
+            " | {} strand-matched used".format(int(sm_mask[track_sets[name]].sum()))))
     track_inds_tensor = torch.as_tensor(track_inds, dtype=torch.long, device=device)
-
-    bin_offset = args.num_central_bins // 2
-    print("Aggregation window: TSS bin +/- {} bins x {} bp".format(bin_offset, CERBERUS_BIN_BP))
+    print("Aggregation: {}".format(aggregation_description(args)))
 
     # ---- Dataset -------------------------------------------------------------
     print("\nLoading Fulco dataset from {}...".format(args.data_path))
@@ -441,7 +500,7 @@ def main():
 
     meta = {k: [] for k in (
         "gene_id", "gene_name", "enh_loc", "tss", "tss_seq_index", "tss_bin",
-        "strand", "enh_dist", "y_delta",
+        "readout", "n_readout_bins", "strand", "enh_dist", "y_delta",
     )}
     all_wt, all_crispri_mean, all_crispri_std = [], [], []
     bs = max(1, int(args.shuffle_batch_size))
@@ -452,12 +511,15 @@ def main():
 
         tss_seq_idx = _tss_seq_index_from_batch(batch)
         tss_bin = _tss_bin_from_seq_index(tss_seq_idx)
-        lo = max(0, tss_bin - bin_offset)
-        hi = min(CERBERUS_NUM_BINS, tss_bin + bin_offset + 1)
+        bins, readout_used = readouts.pair_readout_bins(
+            args.readout, batch, exon_coords, _tss_window_bins(tss_bin, args.num_central_bins),
+            CERBERUS_SEQ_LEN, 0, CERBERUS_BIN_BP, CERBERUS_NUM_BINS,
+        )
+        bins_t = torch.as_tensor(bins, dtype=torch.long, device=device)
 
         wt, crispri_mean, crispri = score_pair(
             models, head_index, batch["x_WT"], batch["x_crispri"], track_inds_tensor,
-            lo, hi, bs, device, args.autocast_dtype,
+            bins_t, bs, device, args.autocast_dtype, untransform,
         )
         all_wt.append(wt)
         all_crispri_mean.append(crispri_mean)
@@ -470,6 +532,8 @@ def main():
         meta["tss"].append(batch["tss"])
         meta["tss_seq_index"].append(tss_seq_idx)
         meta["tss_bin"].append(tss_bin)
+        meta["readout"].append(readout_used)
+        meta["n_readout_bins"].append(len(bins))
         meta["strand"].append(batch["strand"])
         meta["enh_dist"].append(batch["enh_dist"])
         meta["y_delta"].append((1.0 - batch["y_delta"]).item())
@@ -478,10 +542,22 @@ def main():
         print("No pairs evaluated -- exiting.")
         return None
 
-    all_wt = np.stack(all_wt)                    # (pairs, folds, tracks)
-    all_crispri_mean = np.stack(all_crispri_mean)
+    return write_outputs(
+        args, meta, np.stack(all_wt), np.stack(all_crispri_mean), all_crispri_std,
+        track_inds, track_sets, track_ids, sm_mask,
+    )
 
-    base_prefix = args.output_prefix or "Fulco_Cerberus"
+
+def write_outputs(args, meta, all_wt, all_crispri_mean, all_crispri_std,
+                  track_inds, track_sets, track_ids, sm_mask):
+    """Write the per-track npz and one results CSV (+ summary) per track set.
+
+    all_wt, all_crispri_mean: (pairs, folds, tracks) per-track sums over the readout
+    bins, tracks in ``track_inds`` order. ``sm_mask`` (tracks,) selects the tracks
+    summed into each set (all True for ``--readout tss``).
+    """
+    base_prefix = args.output_prefix or (
+        "Fulco_Cerberus" + ("_tss" if args.readout == "tss" else ""))
     shard_tag = (
         "_shard{:03d}of{:03d}".format(args.shard_idx, args.num_shards)
         if args.num_shards > 1 else ""
@@ -494,17 +570,27 @@ def main():
         folds=np.asarray(args.folds),
         track_head_index=track_inds,
         track_identifier=np.asarray(track_ids),
+        track_strand_matched=np.asarray(sm_mask),
+        readout_mode=np.asarray(args.readout),
+        readout=np.asarray(meta["readout"]),
+        n_readout_bins=np.asarray(meta["n_readout_bins"]),
         gene_id=np.asarray(meta["gene_id"]),
         enh_loc=np.asarray(meta["enh_loc"]),
         **{"set_" + name: idx for name, idx in track_sets.items()},
     )
-    print("\nPer-track window sums saved to: {}".format(npz_path))
+    print("\nPer-track sums saved to: {}".format(npz_path))
+
+    n_fallback = sum(r != args.readout for r in meta["readout"])
+    if n_fallback:
+        print("{} / {} pairs had no exon bin in the window and used the TSS window.".format(
+            n_fallback, len(meta["readout"])))
 
     # ---- Results (one table per track set) ------------------------------------
     print("\nCompiling results...")
     out = {}
     for name in TRACK_SETS:
         idx = track_sets[name]
+        idx = idx[sm_mask[idx]]
         # Sum the set's tracks, then average replicates (make_borzoi_ensemble.py).
         pred_wt = all_wt[:, :, idx].sum(axis=2).mean(axis=1)
         pred_crispri_mean = all_crispri_mean[:, :, idx].sum(axis=2).mean(axis=1)
@@ -529,11 +615,12 @@ def main():
                 args.shard_idx, args.num_shards, name, shard_csv))
             out[name] = df_results
             continue
-        out[name] = _report_and_save(df_results, output_prefix, name, len(idx), args)
+        out[name] = _report_and_save(df_results, output_prefix, name, len(track_sets[name]),
+                                     len(idx), n_fallback, args)
     return out
 
 
-def _report_and_save(df_results, output_prefix, set_name, n_tracks, args):
+def _report_and_save(df_results, output_prefix, set_name, n_tracks, n_used, n_fallback, args):
     n_full = len(df_results)
     df_corr = fulco_results_for_correlation(df_results, args.fulco_corr_observed_subset)
     n_corr = len(df_corr)
@@ -557,6 +644,8 @@ def _report_and_save(df_results, output_prefix, set_name, n_tracks, args):
     log_spr_r, log_spr_p = spearmanr(obs_log_strength, pred_log_strength)
 
     track_desc = describe_track_set(set_name, n_tracks, args.target_cell_line)
+    if n_used != n_tracks:
+        track_desc += "; {} strand-matched used".format(n_used)
     print("\n" + "=" * 80)
     print("RESULTS SUMMARY -- track set '{}': {}".format(set_name, track_desc))
     print("=" * 80)
@@ -590,7 +679,8 @@ def _report_and_save(df_results, output_prefix, set_name, n_tracks, args):
         f.write("Weights:           {}\n".format(args.cerberus_dir))
         f.write("Replicates:        {} (folds {}), pred_wt / pred_crispri averaged\n".format(
             len(args.folds), args.folds))
-        f.write("Autocast:          {}\n".format(args.autocast_dtype or "off (fp32, TF32 disabled)"))
+        f.write("Autocast:          {}\n".format(
+            args.autocast_dtype or "off (fp32; mamba-ssm Triton kernels use TF32)"))
         f.write("\nEVALUATION PARAMETERS\n")
         f.write("-" * 80 + "\n")
         f.write("Context window:    {:,} bp\n".format(CERBERUS_SEQ_LEN))
@@ -604,9 +694,9 @@ def _report_and_save(df_results, output_prefix, set_name, n_tracks, args):
         f.write("Enhancer window:   {} bp\n".format(args.enhancer_bp))
         f.write("Target cell line:  {}\n".format(args.target_cell_line))
         f.write("Track set:         {}: {}\n".format(set_name, track_desc))
-        f.write("Aggregation:       sum over TSS bin +/- {} bins ({} bp bins)\n".format(
-            args.num_central_bins // 2, CERBERUS_BIN_BP
-        ))
+        f.write("Aggregation:       {}\n".format(aggregation_description(args)))
+        if args.readout == "exon":
+            f.write("TSS-window fallback: {} / {} pairs\n".format(n_fallback, n_full))
         f.write("Scoring:           fractional drop (pred_WT - pred_CRISPRi) / (pred_WT + eps)\n")
         f.write("Fulco subset:      {}\n".format(args.fulco_corr_observed_subset))
         f.write("\nRESULTS\n")
