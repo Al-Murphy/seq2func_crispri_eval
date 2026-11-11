@@ -205,7 +205,7 @@ python scripts/test_gasperini_alphagenome.py
 > Spearman ρ by SD 0.031 (range 0.27–0.38). That was the noisiest model we
 > measured. From each run's recorded shuffle spread, Fulco ρ moves by SD
 > 0.010–0.022 for single Flashzoi replicates, 0.005 for the 4-replicate
-> ensemble and 0.014 for AlphaGenome; Gasperini ρ moves by ≤ 0.003. Fulco's
+> ensemble and 0.014 for AlphaGenome; on Gasperini, Flashzoi ρ moves by ≤ 0.003. Fulco's
 > 63 pairs alone give ρ an uncertainty of ~0.1. At N = 50 the same model's Fulco
 > ρ was also ~0.015 lower than at N = 500, because a few pairs have rare shuffles
 > with large effects.
