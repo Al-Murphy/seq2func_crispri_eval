@@ -55,9 +55,10 @@ pair inside its own input window, so `n` differs between models.
 Pearson r on both benchmarks, the expected benefit of averaging replicate models;
 on Spearman ρ it is best on Gasperini but below fold 0 on Fulco. Single-fold
 numbers show the spread across replicates, which on Fulco's 63 pairs is large
-for Spearman ρ (0.24–0.54). Part of that spread is the dinucleotide shuffles
-themselves: they are redrawn on every run, and that alone moves Fulco ρ by up to
-~0.1 (Pearson r by ~0.01).
+for Spearman ρ (0.24–0.54). That spread is the replicates themselves, not the
+dinucleotide shuffles. These runs predate seeding, so each drew its own shuffles,
+but redrawing them moves a single replicate's Fulco ρ by only SD 0.010–0.022, and
+the ensemble's by 0.005 (README, "Shuffles").
 
 ## Reproduce
 

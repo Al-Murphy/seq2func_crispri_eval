@@ -47,6 +47,13 @@ the gene's TSS, then scores `N` dinucleotide-shuffled negatives in which the
 enhancer slice has been scrambled in place. The predicted fractional drop
 `(WT - mean CRISPRi) / WT` is correlated against the measured CRISPRi effect.
 
+The shuffles are seeded per pair (`--seed`, default 101), from the gene, the
+enhancer and the test-time shift rather than the pair's row. Every model, shard and
+window size therefore scores the same shuffled sequences, and reruns reproduce.
+The results in `results/` predate the seed, so each run there drew its own
+shuffles; see "Shuffles" under [Running one evaluation](#running-one-evaluation) for how much
+that moves the scores.
+
 ### Gene readouts
 
 How each model's output is reduced to one number per sequence:
@@ -190,9 +197,18 @@ python scripts/test_gasperini_alphagenome.py
 > (replicate 0, exon readout, all Fulco pairs) in bf16 vs fp32 adds a per-pair
 > error of ~2.4e-3 to `pred_delta` (median |`pred_delta`| 1.7e-2), about the
 > size of the noise from redrawing the 50 shuffles (~1.8e-3 per run); per-pair
-> rank agreement with fp32 stays at ρ = 0.98. The shuffles are not seeded, so
-> reruns of any model differ by that shuffle noise, and with only 63 pairs this
-> alone moves Fulco's Spearman ρ by up to ~0.1 (Pearson r by ~0.01).
+> rank agreement with fp32 stays at ρ = 0.98.
+>
+> **Shuffles.** N = 50 is enough. We scored original Borzoi replicate 0 (fp32,
+> exon readout) on Fulco with 1,000 shuffles per pair and split them into 20
+> independent sets of 50. Between sets, Pearson r moved by SD 0.006 and
+> Spearman ρ by SD 0.031 (range 0.27–0.38). That was the noisiest model we
+> measured. From each run's recorded shuffle spread, Fulco ρ moves by SD
+> 0.010–0.022 for single Flashzoi replicates, 0.005 for the 4-replicate
+> ensemble and 0.014 for AlphaGenome; Gasperini ρ moves by ≤ 0.003. Fulco's
+> 63 pairs alone give ρ an uncertainty of ~0.1. At N = 50 the same model's Fulco
+> ρ was also ~0.015 lower than at N = 500, because a few pairs have rare shuffles
+> with large effects.
 
 Each script writes:
 ```
