@@ -94,6 +94,8 @@ def parse_args():
         help="Genome build to use"
     )
 
+    parser.add_argument("--seed", type=int, default=101,
+        help="Seed for the enhancer shuffles, drawn per pair so every model sees the same shuffled sequences (default: 101)")
     parser.add_argument(
         "--N",
         type=int,
@@ -247,6 +249,7 @@ def main():
         data_path=args.data_path,
         sequence_length=args.receptive_field,
         N=args.N,
+        seed=args.seed,
         enhancer_bp=args.enhancer_bp,
         genome_build=args.genome_build,
         high_confidence_subset=args.high_confidence_subset,
@@ -369,6 +372,8 @@ def main():
         f.write("\nEVALUATION PARAMETERS\n")
         f.write("-" * 80 + "\n")
         f.write(f"Receptive field: {args.receptive_field} bp\n")
+        f.write(f"N shuffles: {args.N}\n")
+        f.write(f"Shuffle seed: {args.seed}\n")
         f.write(f"Genome build: {args.genome_build}\n")
         f.write(f"Target cell line: {args.target_cell_line}\n")
         f.write(f"Target assay: {args.target_assay}\n")

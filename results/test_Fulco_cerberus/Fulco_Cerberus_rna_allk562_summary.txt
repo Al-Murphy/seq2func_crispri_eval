@@ -1,0 +1,37 @@
+================================================================================
+FULCO BENCHMARK SUMMARY -- Cerberus
+================================================================================
+
+MODEL INFORMATION
+--------------------------------------------------------------------------------
+Model:             Cerberus (calico/baskerville)
+Weights:           /grid/koo/home/amurphy/projects/baskerville_cerberus/releases/cerberus
+Replicates:        8 (folds [0, 1, 2, 3, 4, 5, 6, 7]), pred_wt / pred_crispri averaged
+Autocast:          off (fp32; mamba-ssm Triton kernels use TF32)
+
+EVALUATION PARAMETERS
+--------------------------------------------------------------------------------
+Context window:    786,432 bp
+Bin resolution:    32 bp (24576 output bins, no crop)
+Genome build:      hg38
+Fulco data path:   ./metadata/fulco/
+Gene TSS CSV:      ./metadata/Gasperini_gene_tss_hg38_biomart_GRCh38_p14.csv
+Validated only:    True
+N shuffles:        50
+Enhancer window:   2000 bp
+Target cell line:  K562
+Track set:         rna_allk562: 160 K562 RNA tracks (all; Borzoi's ENCODE set + recount3 4sU/TT-seq/ActD); 137 strand-matched used
+Aggregation:       exon: untransformed coverage of strand-matched tracks summed over the output bins overlapping the gene's exons (./metadata/Fulco_gene_exons_hg38.csv); TSS bin +/- 10 bins if none
+TSS-window fallback: 0 / 63 pairs
+Scoring:           fractional drop (pred_WT - pred_CRISPRi) / (pred_WT + eps)
+Fulco subset:      knockdown_only
+
+RESULTS
+--------------------------------------------------------------------------------
+Pairs evaluated:                 63
+Pairs used for Pearson/Spearman: 63
+Pearson r  (linear):  0.7351  (p=6.93e-12)
+Spearman r (linear):  0.6141  (p=8.69e-08)
+Pearson r  (log2):    0.7426  (p=3.24e-12)
+Spearman r (log2):    0.6141  (p=8.69e-08)
+================================================================================

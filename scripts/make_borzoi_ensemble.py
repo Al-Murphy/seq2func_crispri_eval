@@ -41,7 +41,8 @@ KEY_COLS = ["gene_id", "enh_loc", "tss"]
 MEAN_COLS = ["pred_wt", "pred_crispri_mean"]
 # Must be identical across folds (same dataset / pairs); carried from fold 0.
 IDENTITY_COLS = [
-    "gene_name", "tss_seq_index", "tss_bin", "strand", "enh_dist", "y_delta",
+    "gene_name", "tss_seq_index", "tss_bin", "readout", "n_readout_bins",
+    "strand", "enh_dist", "y_delta",
 ]
 
 

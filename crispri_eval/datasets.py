@@ -25,6 +25,7 @@ Reference column conventions match the published SequenceModelBenchmark
 """
 
 import glob
+import hashlib
 import json
 import os
 import time
@@ -45,6 +46,21 @@ from .dataset_utils import (
     one_hot_encode_dna,
     seq_loader,
 )
+
+
+def pair_shuffle_seed(seed, gene_id, enh_loc, shift=0):
+    """Random state for one pair's dinucleotide shuffles, or None if ``seed`` is None.
+
+    Derived from the pair (gene, enhancer, TTA shift) rather than its row number, so
+    every model, shard and receptive-field filter draws identical shuffles for a pair.
+    The shuffled 2 kb slice is taken in genome coordinates before any reverse
+    complement, so the shuffled bases match too. ``seed=None`` draws fresh shuffles
+    on every call (the behaviour before shuffles were seeded).
+    """
+    if seed is None:
+        return None
+    key = "{}|{}|{}|{}".format(int(seed), gene_id, enh_loc, int(shift)).encode()
+    return int.from_bytes(hashlib.sha256(key).digest()[:4], "little") % 10_000_000
 
 
 class GasperiniDataset(torch.utils.data.Dataset):
@@ -70,7 +86,8 @@ class GasperiniDataset(torch.utils.data.Dataset):
             - sequence_length: Length of the sequence to be loaded. The window is centred on the
               gene TSS (matching the SequenceModelBenchmark / Avsec et al. approach); pairs are kept
               if the enhancer midpoint lies within half this length of the TSS.
-            - seed: Seed for the dinucleotide shuffling. Default 101.
+            - seed: Seed for the enhancer shuffles. Default 101. Dinucleotide shuffles are
+              seeded per pair (see :func:`pair_shuffle_seed`); None draws fresh shuffles.
             - N: Number of times to dinucleotide shuffle the sequence. Default 25. Note this will increase the number of samples returnedby N.
             - enhancer_bp: Number of base pairs to consider for the enhancer. Default 2000.
             - genome_build: Genome build to use. Default hg38.
@@ -236,7 +253,8 @@ class GasperiniDataset(torch.utils.data.Dataset):
         # Reverse complement = flip positions (dim 1) AND complement bases (dim 2, ACGT→TGCA)
         return torch.flip(seq, dims=[1, 2])
 
-    def _crispri(self, seq, cCRE_i, seq_window_start_genomic, crispri_effect_size_i, pair_idx=0):
+    def _crispri(self, seq, cCRE_i, seq_window_start_genomic, crispri_effect_size_i, pair_idx=0,
+                 shuffle_seed=None):
         seq = seq.swapaxes(1, 2)
         start_pos = cCRE_i - crispri_effect_size_i // 2
         rel_pos = max(0, start_pos - seq_window_start_genomic)
@@ -247,7 +265,7 @@ class GasperiniDataset(torch.utils.data.Dataset):
 
         if self.crispri_perturb_mode == "dinucleotide":
             silenced_seq = dinucleotide_shuffle(
-                silenced_seq, allow_N=True, n=self.N
+                silenced_seq, allow_N=True, n=self.N, random_state=shuffle_seed
             )  # (1, N, 4, L)
             for n_i in range(self.N):
                 silenced_seq_i = silenced_seq[:, n_i, :, :]
@@ -264,7 +282,10 @@ class GasperiniDataset(torch.utils.data.Dataset):
             dev = silenced_seq.device
             for n_i in range(self.N):
                 g = torch.Generator()
-                g.manual_seed(int(self.seed) + int(pair_idx) * 1_000_003 + n_i)
+                if self.seed is None:
+                    g.seed()
+                else:
+                    g.manual_seed(int(self.seed) + int(pair_idx) * 1_000_003 + n_i)
                 perm = torch.randperm(L, generator=g).to(device=dev, dtype=torch.long)
                 silenced_seq_i = silenced_seq[:, :, perm]
                 seq_crispri_i = torch.concat(
@@ -324,7 +345,10 @@ class GasperiniDataset(torch.utils.data.Dataset):
             pad_seq=True,
         ).swapaxes(1, 2).to(torch.float32)
         seqs_wt = seqs.clone()
-        seqs = self._crispri(seqs, enh_middle, seq_start, self.enhancer_bp, pair_idx=idx)
+        seqs = self._crispri(
+            seqs, enh_middle, seq_start, self.enhancer_bp, pair_idx=idx,
+            shuffle_seed=pair_shuffle_seed(self.seed, data["ENSG"], data["enh_loc"], shift),
+        )
 
         if strand_i < 1:
             seqs = self._reverse_complement_dna(seqs)
@@ -378,11 +402,22 @@ class GasperiniDataset(torch.utils.data.Dataset):
         return meta
 
 
-def _fulco_ensembl_lookup_symbols(symbols, genome_build="hg38"):
+def _fulco_ensembl_lookup_symbols(symbols, genome_build="hg38", cache_csv=None):
     """
     Map HGNC symbols to Ensembl gene IDs and strand via Ensembl REST (used when
     ``ziga_additional_columns.tsv`` has ``Gene`` but no ``gene_id``, as in Karollus Zenodo).
+
+    Resolved symbols are kept in ``cache_csv`` (if given) and only symbols missing
+    from it are queried, so runs stop depending on Ensembl REST being up: a failed
+    lookup otherwise drops that gene's pairs from the benchmark.
     """
+    cached = None
+    if cache_csv is not None and os.path.exists(cache_csv):
+        cached = pd.read_csv(cache_csv)
+        known = set(cached["resolved_symbol"].astype(str))
+        symbols = [s for s in symbols if str(s).strip() not in known]
+        print("Ensembl lookup cache {}: {} symbols cached, {} to query.".format(
+            cache_csv, len(known), len(symbols)))
     # Ensembl /lookup/symbol rejects some legacy table symbols (HTTP 400); try HGNC-preferred alias.
     symbol_aliases = {
         "H1FX": "H1-10",
@@ -433,12 +468,17 @@ def _fulco_ensembl_lookup_symbols(symbols, genome_build="hg38"):
         except Exception as exc:
             warnings.warn("Ensembl lookup failed for {!r}: {}".format(sym, exc))
         time.sleep(0.07)
-    if not rows:
+    lookups = pd.DataFrame(rows, columns=["resolved_symbol", "Gene stable ID", "Strand_ensembl"])
+    if cached is not None:
+        lookups = pd.concat([cached, lookups], ignore_index=True)
+    if cache_csv is not None and rows:
+        lookups.to_csv(cache_csv, index=False)
+    if lookups.empty:
         raise RuntimeError(
             "Could not resolve any gene symbols via Ensembl REST. "
             "Add a ``gene_id`` / ``Gene stable ID`` column to ziga, or check network / symbols."
         )
-    return pd.DataFrame(rows)
+    return lookups
 
 
 class FulcoDataset(torch.utils.data.Dataset):
@@ -591,6 +631,9 @@ class FulcoDataset(torch.utils.data.Dataset):
             sym_df = _fulco_ensembl_lookup_symbols(
                 self.crispri_data[sym_col].dropna().unique().tolist(),
                 genome_build=self.genome_build,
+                cache_csv=os.path.join(
+                    self.data_path, "ensembl_symbol_lookup_{}.csv".format(self.genome_build)
+                ),
             )
             self.crispri_data = self.crispri_data.merge(
                 sym_df, left_on=sym_col, right_on="resolved_symbol", how="inner"
@@ -731,7 +774,8 @@ class FulcoDataset(torch.utils.data.Dataset):
         # Reverse complement = flip positions (dim 1) AND complement bases (dim 2, ACGT→TGCA)
         return torch.flip(seq, dims=[1, 2])
 
-    def _crispri(self, seq, cCRE_i, seq_window_start_genomic, crispri_effect_size_i, pair_idx=0):
+    def _crispri(self, seq, cCRE_i, seq_window_start_genomic, crispri_effect_size_i, pair_idx=0,
+                 shuffle_seed=None):
         seq = seq.swapaxes(1, 2)
         start_pos = cCRE_i - crispri_effect_size_i // 2
         rel_pos = max(0, start_pos - seq_window_start_genomic)
@@ -740,7 +784,9 @@ class FulcoDataset(torch.utils.data.Dataset):
         all_shuffled = []
 
         if self.crispri_perturb_mode == "dinucleotide":
-            silenced_seq = dinucleotide_shuffle(silenced_seq, allow_N=True, n=self.N)
+            silenced_seq = dinucleotide_shuffle(
+                silenced_seq, allow_N=True, n=self.N, random_state=shuffle_seed
+            )
             for n_i in range(self.N):
                 silenced_seq_i = silenced_seq[:, n_i, :, :]
                 seq_crispri_i = torch.concat(
@@ -753,7 +799,10 @@ class FulcoDataset(torch.utils.data.Dataset):
             dev = silenced_seq.device
             for n_i in range(self.N):
                 g = torch.Generator()
-                g.manual_seed(int(self.seed) + int(pair_idx) * 1_000_003 + n_i)
+                if self.seed is None:
+                    g.seed()
+                else:
+                    g.manual_seed(int(self.seed) + int(pair_idx) * 1_000_003 + n_i)
                 perm = torch.randperm(L, generator=g).to(device=dev, dtype=torch.long)
                 silenced_seq_i = silenced_seq[:, :, perm]
                 seq_crispri_i = torch.concat(
@@ -807,7 +856,10 @@ class FulcoDataset(torch.utils.data.Dataset):
         ).swapaxes(1, 2).to(torch.float32)
         seqs_wt = seqs.clone()
         # _crispri locates the enhancer via (enh_middle - seq_start), so it tracks the shift.
-        seqs = self._crispri(seqs, enh_middle, seq_start, self.enhancer_bp, pair_idx=idx)
+        seqs = self._crispri(
+            seqs, enh_middle, seq_start, self.enhancer_bp, pair_idx=idx,
+            shuffle_seed=pair_shuffle_seed(self.seed, data["ENSG"], data["enh_loc"], shift),
+        )
 
         if strand_i < 1:
             seqs = self._reverse_complement_dna(seqs)

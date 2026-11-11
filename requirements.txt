@@ -20,6 +20,9 @@ enformer-pytorch
 # Borzoi / Flashzoi
 borzoi-pytorch
 
+# Cerberus: needs its own environment (torch >=2.11,<2.14 + mamba-ssm),
+# installed via calico/baskerville. See the README; not pip-installable here.
+
 # NTv3
 transformers
 

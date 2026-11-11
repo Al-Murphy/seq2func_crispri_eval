@@ -17,6 +17,8 @@ pytest tests/test_aggregation.py -v
 | `test_metadata.py` | Integration | Every shipped file under `metadata/` loads with the expected schema and row counts. |
 | `test_track_resolution.py` | Integration | Borzoi K562 RNA/CAGE and AlphaGenome K562 track lookups return the expected indices against the shipped metadata. |
 | `test_aggregation.py` | Unit | TSS-bin / output-index helpers, per-script aggregation helpers (Borzoi, NTv3, AlphaGenome) on synthetic tensors, NTv3 one-hot → token mapping, exon overlap. |
+| `test_readouts.py` | Unit | Exon-bin mapping, strand-matched track mask, Calico untransforms, per-pair readout bins (`crispri_eval.readouts`). |
+| `test_shuffle_seed.py` | Unit | Per-pair shuffle seeds: deterministic, keyed on gene / enhancer / shift; identical shuffled bases for windows of different size; `seed=None` redraws. |
 | `test_scripts_cli.py` | Smoke | Every `scripts/*.py` responds to `--help` without raising and defines a `__main__` guard. |
 
 ## What is NOT covered

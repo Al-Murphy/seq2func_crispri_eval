@@ -1,0 +1,33 @@
+================================================================================
+GASPERINI BENCHMARK SUMMARY -- Borzoi (PyTorch)
+================================================================================
+
+MODEL INFORMATION
+--------------------------------------------------------------------------------
+Model type:        base
+Model name:        base_borzoi_flashed
+Backbone replicate: johahi/flashzoi-replicate-2
+Flashzoi:          True
+
+EVALUATION PARAMETERS
+--------------------------------------------------------------------------------
+Context window:    524,288 bp
+Bin resolution:    32 bp (6144 output bins)
+Central crop:      [163840, 360448) bp of input window
+Genome build:      hg38
+N shuffles:        50
+Enhancer window:   2000 bp
+Target cell line:  K562
+Target assay:      RNA
+Tracks:            94 K562 RNA tracks: RNA:K562, RNA:K562, RNA:K562, RNA:K562 (+90 more)
+Aggregation:       sum over 20 central bins (640 bp around TSS bin)
+Scoring:           fractional drop (pred_WT - pred_CRISPRi) / (pred_WT + eps)
+
+RESULTS
+--------------------------------------------------------------------------------
+Pairs evaluated:        417
+Pearson r  (linear):  0.2721  (p=1.63e-08)
+Spearman r (linear):  0.2926  (p=1.12e-09)
+Pearson r  (log2):    0.2165  (p=8.14e-06)
+Spearman r (log2):    0.2926  (p=1.12e-09)
+================================================================================

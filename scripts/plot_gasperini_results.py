@@ -347,7 +347,7 @@ def plot_single_model(df, ax, pal, title=None, show_legend=True, show_ylabel=Tru
             marker="^",
             color=pal[2],
             zorder=5,
-            label="Model Predictions (Truncated)",
+            label="Model Predictions (outside 0–1, clipped)",
         )
 
     ax.set_yscale(y_scale)
@@ -519,7 +519,7 @@ def plot_log2_dist_panels(
     for idx in range(n_models, len(axes_flat)):
         axes_flat[idx].axis("off")
 
-    fig.text(0.04, 0.5, ylabel_shared, va="center", rotation="vertical", fontsize=11)
+    axes_flat[0].set_ylabel(ylabel_shared, fontsize=11)  # beside the first panel's ticks
 
     handles, legend_labels = axes_flat[0].get_legend_handles_labels()
     fig.legend(handles, legend_labels, fontsize=11,
@@ -829,13 +829,13 @@ def plot_multiple_models(result_files, labels, output_path, dpi, y_scale='linear
     for idx in range(n_models, len(axes)):
         axes[idx].axis('off')
     
-    # Add a single y-axis label for all subplots
-    fig.text(0.04, 0.5, 'Change in Expression (%)\ndue to Enhancer Knockdown', 
-             va='center', rotation='vertical', fontsize=12)
+    # One y-axis label for all subplots, on the first panel so it sits beside its tick
+    # labels (a figure-coordinate x leaves a wide gap once the figure is many panels wide).
+    axes[0].set_ylabel('Change in Expression (%)\ndue to Enhancer Knockdown', fontsize=12)
     
     # Create a single legend for all subplots
     handles, legend_labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, legend_labels, fontsize=11, 
+    fig.legend(handles, legend_labels, fontsize=11, markerscale=3,
                bbox_to_anchor=(0.85, 0.5), loc='center left', frameon=False)
     
     plt.tight_layout()

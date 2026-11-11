@@ -4,8 +4,7 @@ FULCO BENCHMARK SUMMARY -- Borzoi (PyTorch)
 
 MODEL INFORMATION
 --------------------------------------------------------------------------------
-Model type:        base
-Model name:        base_borzoi_flashed
+Model:             base Borzoi
 Backbone replicate: johahi/flashzoi-replicate-1
 Flashzoi:          True
 
@@ -22,8 +21,9 @@ N shuffles:        50
 Enhancer window:   2000 bp
 Target cell line:  K562
 Target assay:      RNA
-Tracks:            94 K562 RNA tracks: RNA:K562, RNA:K562, RNA:K562, RNA:K562 (+90 more)
-Aggregation:       sum over 20 central bins (640 bp around TSS bin)
+Tracks:            94 K562 RNA tracks: RNA:K562, RNA:K562, RNA:K562, RNA:K562 (+90 more) | 71 strand-matched ('+' or unstranded) used
+Aggregation:       exon: untransformed coverage summed over the output bins overlapping the gene's exons (./metadata/Fulco_gene_exons_hg38.csv); TSS window of 20 bins if none
+TSS-window fallback: 0 / 63 pairs
 Scoring:           fractional drop (pred_WT - pred_CRISPRi) / (pred_WT + eps)
 Fulco subset:      knockdown_only
 
@@ -31,8 +31,8 @@ RESULTS
 --------------------------------------------------------------------------------
 Pairs evaluated:                 63
 Pairs used for Pearson/Spearman: 63
-Pearson r  (linear):  0.5514  (p=2.82e-06)
-Spearman r (linear):  0.3237  (p=9.66e-03)
-Pearson r  (log2):    0.5231  (p=1.09e-05)
-Spearman r (log2):    0.3237  (p=9.66e-03)
+Pearson r  (linear):  0.4894  (p=4.68e-05)
+Spearman r (linear):  0.3282  (p=8.64e-03)
+Pearson r  (log2):    0.4483  (p=2.29e-04)
+Spearman r (log2):    0.3282  (p=8.64e-03)
 ================================================================================

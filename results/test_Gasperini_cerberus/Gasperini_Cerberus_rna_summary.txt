@@ -1,0 +1,32 @@
+================================================================================
+GASPERINI BENCHMARK SUMMARY -- Cerberus
+================================================================================
+
+MODEL INFORMATION
+--------------------------------------------------------------------------------
+Model:             Cerberus (calico/baskerville)
+Weights:           /grid/koo/home/amurphy/projects/baskerville_cerberus/releases/cerberus
+Replicates:        8 (folds [0, 1, 2, 3, 4, 5, 6, 7]), pred_wt / pred_crispri averaged
+Autocast:          off (fp32; mamba-ssm Triton kernels use TF32)
+
+EVALUATION PARAMETERS
+--------------------------------------------------------------------------------
+Context window:    786,432 bp
+Bin resolution:    32 bp (24576 output bins, no crop)
+Genome build:      hg38
+N shuffles:        50
+Enhancer window:   2000 bp
+Target cell line:  K562
+Track set:         rna: 94 K562 RNA-Seq tracks (Borzoi-matched ENCODE identifiers); 71 strand-matched used
+Aggregation:       exon: untransformed coverage of strand-matched tracks summed over the output bins overlapping the gene's exons (./metadata/Gasperini_gene_exons_hg38.csv); TSS bin +/- 10 bins if none
+TSS-window fallback: 0 / 427 pairs
+Scoring:           fractional drop (pred_WT - pred_CRISPRi) / (pred_WT + eps)
+
+RESULTS
+--------------------------------------------------------------------------------
+Pairs evaluated:        427
+Pearson r  (linear):    0.3405  (p=4.76e-13)
+Spearman r (linear):    0.3060  (p=1.05e-10)
+Pearson r  (log2):      0.2717  (p=1.16e-08)
+Spearman r (log2):      0.3060  (p=1.05e-10)
+================================================================================
