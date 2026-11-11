@@ -100,6 +100,23 @@ def parse_args():
     )
     p.add_argument("--organism_index", type=int, default=0,
                    help="0 = human (default), 1 = mouse.")
+    p.add_argument(
+        "--backend", choices=["pytorch", "api"], default="pytorch",
+        help=(
+            "pytorch (default): AlphaGenome 1 through the PyTorch port on this machine. "
+            "api: AlphaGenome 2 through DeepMind's hosted AlphaGenome API (needs the "
+            "``alphagenome`` client >= 2.0.0 and an API key file); same windows, shuffles, "
+            "strand-matched track rule and exon readout."
+        ),
+    )
+    p.add_argument("--api_key_file", type=str, default="~/.config/alphagenome/api_key",
+                   help="File holding the AlphaGenome API key (--backend api). Never printed.")
+    p.add_argument("--api_condition", type=str, default="EFO:0002067",
+                   help="Condition (ontology CURIE) for --backend api; default K562 (EFO:0002067).")
+    p.add_argument("--api_model_version", type=str, default="ALL_FOLDS", choices=["ALL_FOLDS", "FOLD_1"],
+                   help="AlphaGenome 2 checkpoint for --backend api (default all folds).")
+    p.add_argument("--api_concurrency", type=int, default=4,
+                   help="Parallel API calls for --backend api; shuffle batches are raised to this size.")
 
     p.add_argument(
         "--modality", choices=["rna_seq", "cage"], default="rna_seq",
@@ -580,8 +597,21 @@ def main():
 
     os.makedirs(args.save_path, exist_ok=True)
 
-    model = load_base_model(args.backbone_model_path, device)
-    model_name = "base_alphagenome"
+    if args.backend == "api":
+        from crispri_eval.alphagenome_api import AlphaGenomeAPIModel
+        model = AlphaGenomeAPIModel(
+            modality=args.modality, condition=args.api_condition,
+            model_version=args.api_model_version, api_key_file=args.api_key_file,
+            concurrency=args.api_concurrency,
+        )
+        model_name = "alphagenome2_api"
+        if args.shuffle_batch_size < args.api_concurrency:
+            print("API backend: shuffle batch size {} -> {} (one API call per sequence, "
+                  "--api_concurrency in parallel)".format(args.shuffle_batch_size, args.api_concurrency))
+            args.shuffle_batch_size = args.api_concurrency
+    else:
+        model = load_base_model(args.backbone_model_path, device)
+        model_name = "base_alphagenome"
     print("Model name: {}".format(model_name))
 
     effective_window_bp = (
@@ -598,13 +628,18 @@ def main():
               "→ {} forward passes/seq".format(list(tta_shifts), args.tta_rev_comp, n_passes))
 
     # ---- Track selection -----------------------------------------------------
-    n_expected = AG_HUMAN_1BP_NUM_TRACKS[args.modality]
-    track_inds, track_desc = get_alphagenome_track_indices(
-        args.metadata_path,
-        args.target_cell_line,
-        output_type=args.modality,
-        n_total_tracks=n_expected,
-    )
+    if args.backend == "api":
+        # The API returns only the requested condition's tracks; apply the same
+        # strand rule as the PyTorch path ('+'/'.' forward, '-'/'.' reverse complement).
+        track_inds, track_desc = model.track_bundle()
+    else:
+        n_expected = AG_HUMAN_1BP_NUM_TRACKS[args.modality]
+        track_inds, track_desc = get_alphagenome_track_indices(
+            args.metadata_path,
+            args.target_cell_line,
+            output_type=args.modality,
+            n_total_tracks=n_expected,
+        )
     print("\nTrack selection ({}): {}".format(args.modality, track_desc))
     if args.modality == "cage":
         print(
@@ -817,7 +852,8 @@ def main():
 
     # Resolve output prefix (shared by shard CSVs and the full summary).
     if args.output_prefix is None:
-        output_prefix = "Fulco_AlphaGenome_base_{}".format(args.modality)
+        output_prefix = ("Fulco_AlphaGenome2_api_{}" if args.backend == "api"
+                         else "Fulco_AlphaGenome_base_{}").format(args.modality)
     else:
         output_prefix = args.output_prefix
 
@@ -890,8 +926,18 @@ def main():
         f.write("=" * 80 + "\n\n")
         f.write("MODEL INFORMATION\n")
         f.write("-" * 80 + "\n")
-        f.write("Model: base AlphaGenome\n")
-        f.write("Backbone:   {}\n".format(args.backbone_model_path or "HuggingFace gtca/alphagenome_pytorch"))
+        if args.backend == "api":
+            import datetime
+            import importlib.metadata
+            f.write("Model: AlphaGenome 2 (DeepMind AlphaGenome API)\n")
+            f.write("Client:     alphagenome {} | model version {} | condition {}\n".format(
+                importlib.metadata.version("alphagenome"), args.api_model_version, args.api_condition))
+            f.write("Tracks:     {}\n".format(track_desc))
+            f.write("API calls:  {} ({} retries) | run date {}\n".format(
+                model.n_calls, model.n_retries, datetime.date.today().isoformat()))
+        else:
+            f.write("Model: base AlphaGenome\n")
+            f.write("Backbone:   {}\n".format(args.backbone_model_path or "HuggingFace gtca/alphagenome_pytorch"))
         f.write("\nEVALUATION PARAMETERS\n")
         f.write("-" * 80 + "\n")
         f.write("Context window:    {:,} bp\n".format(AG_SEQ_LEN))
