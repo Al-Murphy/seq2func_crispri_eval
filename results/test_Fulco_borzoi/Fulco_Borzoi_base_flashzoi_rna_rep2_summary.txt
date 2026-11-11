@@ -1,0 +1,38 @@
+================================================================================
+FULCO BENCHMARK SUMMARY -- Borzoi (PyTorch)
+================================================================================
+
+MODEL INFORMATION
+--------------------------------------------------------------------------------
+Model:             base Borzoi
+Backbone replicate: johahi/flashzoi-replicate-2
+Flashzoi:          True
+
+EVALUATION PARAMETERS
+--------------------------------------------------------------------------------
+Context window:    524,288 bp
+Bin resolution:    32 bp (6144 output bins)
+Central crop:      [163840, 360448) bp of input window
+Genome build:      hg38
+Fulco data path:   ./metadata/fulco/
+Gene TSS CSV:      ./metadata/Gasperini_gene_tss_hg38_biomart_GRCh38_p14.csv
+Validated only:    True
+N shuffles:        50
+Enhancer window:   2000 bp
+Target cell line:  K562
+Target assay:      RNA
+Tracks:            94 K562 RNA tracks: RNA:K562, RNA:K562, RNA:K562, RNA:K562 (+90 more) | 71 strand-matched ('+' or unstranded) used
+Aggregation:       exon: untransformed coverage summed over the output bins overlapping the gene's exons (./metadata/Fulco_gene_exons_hg38.csv); TSS window of 20 bins if none
+TSS-window fallback: 0 / 63 pairs
+Scoring:           fractional drop (pred_WT - pred_CRISPRi) / (pred_WT + eps)
+Fulco subset:      knockdown_only
+
+RESULTS
+--------------------------------------------------------------------------------
+Pairs evaluated:                 63
+Pairs used for Pearson/Spearman: 63
+Pearson r  (linear):  0.5582  (p=2.00e-06)
+Spearman r (linear):  0.2369  (p=6.16e-02)
+Pearson r  (log2):    0.5946  (p=2.78e-07)
+Spearman r (log2):    0.2369  (p=6.16e-02)
+================================================================================
