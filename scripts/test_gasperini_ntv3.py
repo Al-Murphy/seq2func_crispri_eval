@@ -224,6 +224,8 @@ def parse_args():
 
     p.add_argument("--data_path", type=str, default="./metadata/")
     p.add_argument("--genome_build", type=str, default="hg38", choices=["hg38", "hg19"])
+    p.add_argument("--seed", type=int, default=101,
+        help="Seed for the enhancer shuffles, drawn per pair so every model sees the same shuffled sequences (default: 101)")
     p.add_argument("--N", type=int, default=50,
                    help="Number of dinucleotide shuffles per enhancer.")
     p.add_argument("--enhancer_bp", type=int, default=2000,
@@ -694,6 +696,7 @@ def main():
         data_path=args.data_path,
         sequence_length=NTV3_SEQ_LEN,
         N=args.N,
+        seed=args.seed,
         enhancer_bp=args.enhancer_bp,
         genome_build=args.genome_build,
         high_confidence_subset=args.high_confidence_subset,
@@ -969,6 +972,7 @@ def main():
         f.write("Score mode:        {}\n".format(args.score_mode))
         f.write("Genome build:      {}\n".format(args.genome_build))
         f.write("N shuffles:        {}\n".format(args.N))
+        f.write("Shuffle seed:      {}\n".format(args.seed))
         f.write("Enhancer window:   {} bp\n".format(args.enhancer_bp))
         f.write("Target cell line:  {}\n".format(args.target_cell_line))
         f.write("Target assay:      {}\n".format(args.target_assay))

@@ -377,6 +377,8 @@ def parse_args():
         help="Biomart CSV with Gene stable ID / Strand; same format as Gasperini TSS export.",
     )
     p.add_argument("--genome_build", type=str, default="hg38", choices=["hg38", "hg19"])
+    p.add_argument("--seed", type=int, default=101,
+        help="Seed for the enhancer shuffles, drawn per pair so every model sees the same shuffled sequences (default: 101)")
     p.add_argument("--N", type=int, default=50,
                    help="Number of dinucleotide shuffles per enhancer.")
     p.add_argument("--enhancer_bp", type=int, default=2000,
@@ -926,6 +928,7 @@ def main():
         data_path=args.data_path,
         sequence_length=NTV3_SEQ_LEN,
         N=args.N,
+        seed=args.seed,
         enhancer_bp=args.enhancer_bp,
         genome_build=args.genome_build,
         validated_only=args.validated_only,
@@ -1199,6 +1202,7 @@ def main():
         f.write("Gene TSS CSV:      {}\n".format(args.gene_tss_csv))
         f.write("Validated only:    {}\n".format(args.validated_only))
         f.write("N shuffles:        {}\n".format(args.N))
+        f.write("Shuffle seed:      {}\n".format(args.seed))
         f.write("Enhancer window:   {} bp\n".format(args.enhancer_bp))
         f.write("Target cell line:  {}\n".format(args.target_cell_line))
         f.write("Target assay:      {}\n".format(args.target_assay))
