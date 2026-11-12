@@ -48,4 +48,5 @@ models/
 !results/**/*_results.csv
 !results/**/*_correlation_summary.csv
 !results/**/*_summary.txt
+!results/**/*_per_track.npz
 !results/*.md

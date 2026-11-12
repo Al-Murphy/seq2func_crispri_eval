@@ -61,6 +61,29 @@ def parse_args():
     )
     p.add_argument("--organism_index", type=int, default=0,
                    help="0 = human (default), 1 = mouse.")
+    p.add_argument(
+        "--backend", choices=["pytorch", "api"], default="pytorch",
+        help=(
+            "pytorch (default): AlphaGenome 1 through the PyTorch port on this machine. "
+            "api: AlphaGenome 2 through DeepMind's hosted AlphaGenome API (needs the "
+            "``alphagenome`` client >= 2.0.0 and an API key file); same windows, shuffles, "
+            "strand-matched track rule and exon readout."
+        ),
+    )
+    p.add_argument("--api_key_file", type=str, default="~/.config/alphagenome/api_key",
+                   help="File holding the AlphaGenome API key (--backend api). Never printed.")
+    p.add_argument("--api_condition", type=str, default="EFO:0002067",
+                   help="Condition (ontology CURIE) for --backend api; default K562 (EFO:0002067).")
+    p.add_argument("--api_model_version", type=str, default="ALL_FOLDS", choices=["ALL_FOLDS", "FOLD_1"],
+                   help="AlphaGenome 2 checkpoint for --backend api (default all folds).")
+    p.add_argument("--api_concurrency", type=int, default=4,
+                   help="Parallel API calls for --backend api; shuffle batches are raised to this size.")
+    p.add_argument("--api_max_retries", type=int, default=8,
+                   help="Retries per API call on rate limits / transient errors (exponential backoff).")
+    p.add_argument("--per_track_export", action="store_true",
+                   help="Also save per-track exon means (WT and every shuffle) to "
+                        "<prefix>[_shardKKKofNNN]_per_track.npz so any track subset can be rescored "
+                        "offline. rna_seq exon readout only, without --tta_rev_comp.")
 
     p.add_argument(
         "--modality", choices=["rna_seq", "cage"], default="rna_seq",
@@ -410,9 +433,50 @@ def _exon_seq_indices(gene_id, exon_coords, chrom, seq_start, seq_len, strand):
     return positions.tolist()
 
 
+def _exon_track_means(sig, exon_idx):
+    """(B, L, n_tracks) signal -> (B, n_tracks) float64 array: per-track mean over exon bp.
+
+    The exon readout of ``_aggregate_sig`` before its mean over tracks, so the mean over
+    any subset of these columns is that subset's readout. NaN when the gene has no exons.
+    """
+    if not exon_idx:
+        return np.full((sig.shape[0], sig.shape[2]), np.nan)
+    idx_t = torch.tensor(exon_idx, dtype=torch.long, device=sig.device)
+    return sig[:, idx_t, :].mean(dim=1).double().cpu().numpy()
+
+
+def _save_per_track(args, model, track_inds, output_prefix, df_results, pt_wt, pt_cr):
+    """Write every pair's per-track exon means (``--per_track_export``) next to the results CSV.
+
+    Arrays: ``wt`` (pairs, tracks), the WT readout averaged over shifts; ``crispri``
+    (pairs, shifts x shuffles, tracks); ``track_index`` / ``track_name`` / ``track_strand``
+    for the forward-strand (+/.) tracks the readout used. A subset's pred_delta is
+    ``(wt[:, s].mean(1) - crispri[:, :, s].mean(2).mean(1)) / wt[:, s].mean(1)``.
+    """
+    stem = output_prefix
+    if args.num_shards > 1:
+        stem += "_shard{:03d}of{:03d}".format(args.shard_idx, args.num_shards)
+    path = os.path.join(args.save_path, stem + "_per_track.npz")
+    plus = list(track_inds["plus"] if isinstance(track_inds, dict) else track_inds)
+    md = getattr(model, "track_metadata", None)
+    if md is not None:
+        names = np.asarray(md["name"].astype(str), dtype=str)[plus]
+        strands = np.asarray(md["strand"].astype(str), dtype=str)[plus]
+    else:
+        names = strands = np.array([""] * len(plus))
+    np.savez_compressed(
+        path,
+        gene_id=np.asarray(df_results["gene_id"].astype(str), dtype=str),
+        enh_loc=np.asarray(df_results["enh_loc"].astype(str), dtype=str),
+        track_index=np.asarray(plus), track_name=names, track_strand=strands,
+        wt=np.stack(pt_wt), crispri=np.stack(pt_cr),
+    )
+    print("Per-track exon means saved to: {}".format(path))
+
+
 def _predict_one_shift(
     ag_model, x, organism_index, track_bundle, window_bp, device,
-    modality, center_index, exon_idx, tta_rev_comp,
+    modality, center_index, exon_idx, tta_rev_comp, per_track_out=None,
 ):
     """
     Forward (+ optional reverse-complement) prediction for a batch of sequences at
@@ -431,6 +495,8 @@ def _predict_one_shift(
         plus_inds = minus_inds = track_bundle
 
     sig = _forward_once(ag_model, x, organism_index, plus_inds, device, modality)
+    if per_track_out is not None:
+        per_track_out.append(_exon_track_means(sig, exon_idx))
     acc = torch.tensor(
         _aggregate_sig(sig, modality, window_bp, center_index, exon_idx), dtype=torch.float64
     )
@@ -453,14 +519,29 @@ def _predict_one_shift(
 
 def main():
     args = parse_args()
+    if args.per_track_export and (args.tta_rev_comp or args.modality != "rna_seq"):
+        raise ValueError("--per_track_export needs --modality rna_seq and no --tta_rev_comp")
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device: {}".format(device))
 
     os.makedirs(args.save_path, exist_ok=True)
 
-    model = load_base_model(args.backbone_model_path, device)
-    model_name = "base_alphagenome"
+    if args.backend == "api":
+        from crispri_eval.alphagenome_api import AlphaGenomeAPIModel
+        model = AlphaGenomeAPIModel(
+            modality=args.modality, condition=args.api_condition,
+            model_version=args.api_model_version, api_key_file=args.api_key_file,
+            concurrency=args.api_concurrency, max_retries=args.api_max_retries,
+        )
+        model_name = "alphagenome2_api"
+        if args.shuffle_batch_size < args.api_concurrency:
+            print("API backend: shuffle batch size {} -> {} (one API call per sequence, "
+                  "--api_concurrency in parallel)".format(args.shuffle_batch_size, args.api_concurrency))
+            args.shuffle_batch_size = args.api_concurrency
+    else:
+        model = load_base_model(args.backbone_model_path, device)
+        model_name = "base_alphagenome"
     print("Model name: {}".format(model_name))
 
     effective_window_bp = (
@@ -476,13 +557,18 @@ def main():
         print("Test-time augmentation: shifts={} bp (real-flank windows), rev_comp={} "
               "→ {} forward passes/seq".format(list(tta_shifts), args.tta_rev_comp, n_passes))
 
-    n_expected = AG_HUMAN_1BP_NUM_TRACKS[args.modality]
-    track_inds, track_desc = get_alphagenome_track_indices(
-        args.metadata_path,
-        args.target_cell_line,
-        output_type=args.modality,
-        n_total_tracks=n_expected,
-    )
+    if args.backend == "api":
+        # The API returns only the requested condition's tracks; apply the same
+        # strand rule as the PyTorch path ('+'/'.' forward, '-'/'.' reverse complement).
+        track_inds, track_desc = model.track_bundle()
+    else:
+        n_expected = AG_HUMAN_1BP_NUM_TRACKS[args.modality]
+        track_inds, track_desc = get_alphagenome_track_indices(
+            args.metadata_path,
+            args.target_cell_line,
+            output_type=args.modality,
+            n_total_tracks=n_expected,
+        )
     print("\nTrack selection ({}): {}".format(args.modality, track_desc))
     if args.modality == "cage":
         print(
@@ -570,6 +656,7 @@ def main():
     all_debug_crispri_std = []
     all_debug_crispri_min = []
     all_debug_crispri_max = []
+    all_pt_wt, all_pt_cr = [], []  # --per_track_export
 
     for batch in tqdm(dataloader, total=len(dataloader)):
         if batch is None:
@@ -613,14 +700,17 @@ def main():
             else:
                 shift_exon.append(None)
 
-        def _one_shift(x_batch, s_i):
+        def _one_shift(x_batch, s_i, pt_out=None):
             return _predict_one_shift(
                 model, x_batch, args.organism_index, track_inds,
                 effective_window_bp, device, args.modality,
                 shift_tss[s_i], shift_exon[s_i], args.tta_rev_comp,
+                per_track_out=pt_out,
             )
 
-        wt_vals = [float(_one_shift(shift_wt[s_i], s_i)[0]) for s_i in range(len(shift_wt))]
+        pt_wt, pt_cr = ([], []) if args.per_track_export else (None, None)
+
+        wt_vals = [float(_one_shift(shift_wt[s_i], s_i, pt_wt)[0]) for s_i in range(len(shift_wt))]
         pred_wt = sum(wt_vals) / len(wt_vals)
 
         pred_crispri_list = []
@@ -628,7 +718,7 @@ def main():
         for s_i in range(len(shift_cr)):
             xcr = shift_cr[s_i]
             for i in range(0, xcr.shape[0], bs):
-                pred_crispri_list.extend(_one_shift(xcr[i : i + bs], s_i).tolist())
+                pred_crispri_list.extend(_one_shift(xcr[i : i + bs], s_i, pt_cr).tolist())
 
         pred_crispri_mean = sum(pred_crispri_list) / len(pred_crispri_list)
         pred_crispri_std = float(np.std(pred_crispri_list))
@@ -655,6 +745,9 @@ def main():
         all_debug_crispri_std.append(pred_crispri_std)
         all_debug_crispri_min.append(pred_crispri_min)
         all_debug_crispri_max.append(pred_crispri_max)
+        if args.per_track_export:
+            all_pt_wt.append(np.concatenate(pt_wt, axis=0).mean(axis=0))  # (T,) mean over shifts
+            all_pt_cr.append(np.concatenate(pt_cr, axis=0))              # (S*N, T)
 
     if len(all_y_deltas) == 0:
         print("No pairs evaluated -- exiting.")
@@ -685,9 +778,12 @@ def main():
 
     # Resolve output prefix (shared by shard CSVs and the full summary).
     if args.output_prefix is None:
-        output_prefix = "Gasperini_AlphaGenome_base_{}".format(args.modality)
+        output_prefix = ("Gasperini_AlphaGenome2_api_{}" if args.backend == "api"
+                         else "Gasperini_AlphaGenome_base_{}").format(args.modality)
     else:
         output_prefix = args.output_prefix
+    if args.per_track_export:
+        _save_per_track(args, model, track_inds, output_prefix, df_results, all_pt_wt, all_pt_cr)
 
     # In sharded mode, write only this shard's per-pair CSV; the merge step
     # (scripts/merge_tta_shards.py) concatenates shards and computes correlations.
@@ -740,8 +836,18 @@ def main():
         f.write("=" * 80 + "\n\n")
         f.write("MODEL INFORMATION\n")
         f.write("-" * 80 + "\n")
-        f.write("Model: base AlphaGenome\n")
-        f.write("Backbone:   {}\n".format(args.backbone_model_path or "HuggingFace gtca/alphagenome_pytorch"))
+        if args.backend == "api":
+            import datetime
+            import importlib.metadata
+            f.write("Model: AlphaGenome 2 (DeepMind AlphaGenome API)\n")
+            f.write("Client:     alphagenome {} | model version {} | condition {}\n".format(
+                importlib.metadata.version("alphagenome"), args.api_model_version, args.api_condition))
+            f.write("Tracks:     {}\n".format(track_desc))
+            f.write("API calls:  {} ({} retries) | run date {}\n".format(
+                model.n_calls, model.n_retries, datetime.date.today().isoformat()))
+        else:
+            f.write("Model: base AlphaGenome\n")
+            f.write("Backbone:   {}\n".format(args.backbone_model_path or "HuggingFace gtca/alphagenome_pytorch"))
         f.write("\nEVALUATION PARAMETERS\n")
         f.write("-" * 80 + "\n")
         f.write("Context window:    {:,} bp\n".format(AG_SEQ_LEN))
