@@ -15,7 +15,7 @@ genomic deep-learning models on two pooled CRISPRi screens:
   release.
 - **[Gasperini et al. 2019](https://pubmed.ncbi.nlm.nih.gov/30612741/)** high-confidence enhancer-gene pairs.
 
-Five models are supported out of the box:
+Six models are supported out of the box:
 
 | Model       | Backbone source                             | Context  | Output res |
 |-------------|---------------------------------------------|----------|------------|
@@ -24,6 +24,31 @@ Five models are supported out of the box:
 | Cerberus    | [calico/baskerville](https://github.com/calico/baskerville) `releases/cerberus` (8 replicates, see below) | 786,432 bp | 32 bp |
 | NTv3        | HuggingFace `InstaDeepAI/NTv3_tracks_1mb` (gated, see below) | 1,048,576 bp | 1 bp |
 | AlphaGenome | HuggingFace `gtca/alphagenome_pytorch` (auto-downloaded via `huggingface_hub`)        | 1,048,576 bp | 1 bp |
+| AlphaGenome 2 | Hosted [AlphaGenome API](https://github.com/google-deepmind/alphagenome) (`alphagenome` client >= 2.0.0, API key, see below) | 1,048,576 bp | 1 bp |
+
+AlphaGenome 2 (Google DeepMind, Nov 2026) is served through the AlphaGenome API
+rather than released as weights. The AlphaGenome scripts take `--backend api`,
+which sends each sequence to the API in place of the PyTorch port
+(`crispri_eval/alphagenome_api.py`); windows, shuffles, the strand-matched track
+rule and the exon readout are the same code. Each request names the K562
+condition (`EFO:0002067`), for which the API returns 12 K562 RNA-Seq tracks
+(ENCODE polyA+ and total RNA-Seq, paired- and single-ended, on '+', '-' and
+unstranded); the strand-matched readout averages 8 of them, where AlphaGenome 1
+has 5 K562 RNA-Seq tracks and averages 3. Notes:
+
+- The hosted model is not version-pinned, so each summary records the client
+  version, model version (`ALL_FOLDS`) and run date. Two runs on 2026-11-12
+  were bit-identical.
+- `--per_track_export` also saves every track's exon mean for the wild type and
+  each shuffle (`*_per_track.npz`, shipped for the published runs), so any track
+  subset can be rescored offline:
+  `w = wt[:, s].mean(1); pred_delta = (w - crispri[:, :, s].mean(2).mean(1)) / w`.
+  The three tracks matching AlphaGenome 1's (polyA+ and total RNA-Seq on '+',
+  unstranded polyA+) score the same as all eight, so the track count does not
+  explain the difference between the two models.
+- Zero-shot: the AlphaGenome 2 preprint reports no CRISPRi data in training,
+  and no validation metric in checkpoint selection. DeepMind did evaluate on
+  the ENCODE-rE2G K562 CRISPRi benchmark, which includes both screens here.
 
 Cerberus (Calico, Oct 2026) is Borzoi's successor: Borzoi's transformer and
 U-net are replaced by bidirectional Mamba-2 (Hydra) blocks. It is released as 8
@@ -50,8 +75,8 @@ enhancer slice has been scrambled in place. The predicted fractional drop
 The shuffles are seeded per pair (`--seed`, default 101), from the gene, the
 enhancer and the test-time shift rather than the pair's row. Every model, shard and
 window size therefore scores the same shuffled sequences, and reruns reproduce.
-The results in `results/` predate the seed, so each run there drew its own
-shuffles; see "Shuffles" under [Running one evaluation](#running-one-evaluation) for how much
+The results in `results/` predate the seed, except AlphaGenome 2's (seed 101),
+so each of the other runs drew its own shuffles; see "Shuffles" under [Running one evaluation](#running-one-evaluation) for how much
 that moves the scores.
 
 ### Gene readouts
@@ -64,7 +89,8 @@ How each model's output is reduced to one number per sequence:
 | Borzoi / Flashzoi | 94 K562 RNA-Seq, strand-matched (71) | output bins overlapping the gene's exons | untransformed (Calico `untransform_preds_borzoi`) |
 | Cerberus | 94 (or 160) K562 RNA, strand-matched (71 / 137) | output bins overlapping the gene's exons | untransformed (Calico `untransform_preds`) |
 | NTv3 | 86 K562 RNA-Seq | mean over the gene's exon bp | model output |
-| AlphaGenome | K562 RNA-Seq, strand-matched | mean over the gene's exon bp | model output |
+| AlphaGenome | 5 K562 RNA-Seq, strand-matched (3) | mean over the gene's exon bp | model output |
+| AlphaGenome 2 | 12 K562 RNA-Seq, strand-matched (8) | mean over the gene's exon bp | model output |
 
 RNA-Seq models are read over the gene's exons (GENCODE, shipped as
 `metadata/*_gene_exons_hg38.csv`), which is how AlphaGenome and Calico score genes;
@@ -92,6 +118,7 @@ seq2func_crispri_eval/
 │   ├── datasets.py           #   FulcoDataset, GasperiniDataset
 │   ├── dataset_utils.py      #   genome fetch, one-hot, dinucleotide shuffle
 │   ├── readouts.py           #   exon readout + Calico untransforms (Borzoi, Cerberus)
+│   ├── alphagenome_api.py    #   AlphaGenome 2 through the AlphaGenome API (--backend api)
 │   └── benchmark_utils.py    #   fulco_results_for_correlation
 │
 ├── scripts/                  # One self-contained script per (dataset × model)
@@ -117,7 +144,7 @@ seq2func_crispri_eval/
 │   ├── Fulco_gene_exons_hg38.csv   # RNA-Seq exon readouts (all RNA-Seq models)
 │   └── Gasperini_gene_exons_hg38.csv
 │
-├── examples/run_all.sh       # End-to-end launch script (10 evals + 2 plots)
+├── examples/run_all.sh       # End-to-end launch script (12 evals + 2 plots)
 ├── tests/                    # pytest suite (smoke + unit + metadata integrity)
 ├── pyproject.toml            # pytest config
 ├── requirements.txt
@@ -148,6 +175,17 @@ pip install enformer-pytorch     # Enformer
 pip install borzoi-pytorch       # Borzoi / Flashzoi
 pip install transformers         # NTv3
 pip install alphagenome-pytorch huggingface_hub  # AlphaGenome
+pip install "alphagenome>=2.0.0"                 # AlphaGenome 2 (API client)
+```
+
+AlphaGenome 2 needs an API key from the
+[AlphaGenome API](https://alphagenome.google/api). Save it in a
+file only you can read; the scripts read `~/.config/alphagenome/api_key` by
+default (`--api_key_file` to change it) and never print it:
+
+```bash
+mkdir -p ~/.config/alphagenome && touch ~/.config/alphagenome/api_key
+chmod 600 ~/.config/alphagenome/api_key   # then paste the key into it
 ```
 
 Cerberus needs its own environment: torch >=2.11,<2.14 and `mamba-ssm`
@@ -182,7 +220,17 @@ python scripts/test_fulco_ntv3.py
 
 # AlphaGenome -- Gasperini, K562 RNA-Seq with GENCODE exon aggregation
 python scripts/test_gasperini_alphagenome.py
+
+# AlphaGenome 2 -- same script, hosted API, CPU only; 51 API calls per pair
+python scripts/test_fulco_alphagenome.py --backend api --per_track_export
 ```
+
+> **AlphaGenome 2 API.** Calls run in parallel threads (`--api_concurrency`,
+> default 4) and retry with exponential backoff on rate limits
+> (`--api_max_retries`, default 8). The published runs took ~1.4 h for Fulco
+> and for each of 8 Gasperini shards (`--num_shards 8 --shard_idx i`, merged
+> with `scripts/merge_tta_shards.py`), nine tasks at once; most of that was
+> waiting out rate limits, so more parallel tasks will not go faster.
 
 > **Precision.** Run NTv3 and Cerberus in fp32, the default (leave
 > `--autocast_dtype` unset). The published NTv3 and Cerberus results are fp32. The score is a small difference
@@ -221,7 +269,7 @@ combination of results files.
 
 ---
 
-## Running all five models + plotting
+## Running all six models + plotting
 
 A reference script chains the full pipeline:
 
@@ -231,6 +279,8 @@ bash examples/run_all.sh
 
 It will produce `./results/test_{Fulco,Gasperini}_<model>/` directories and the
 combined-model plots `./results/plots/{fulco,gasperini}_all_models.png`.
+AlphaGenome 2 runs (and appears in the plots) only when an API key file is
+present.
 
 ---
 
@@ -357,6 +407,7 @@ larger raw data are not committed:
 | Borzoi `targets_human.txt` | [calico/borzoi](https://github.com/calico/borzoi) `examples/targets_human.txt` | `*_borzoi.py` (shipped) |
 | Cerberus `targets_human.txt` | [calico/baskerville](https://github.com/calico/baskerville) `releases/cerberus/targets_human.txt` | `*_cerberus.py` (shipped as `cerberus_human_targets.txt`) |
 | AlphaGenome `track_metadata.parquet` | [alphagenome-pytorch](https://github.com/lucidrains/alphagenome) `scripts/extract_track_metadata.py` | `*_alphagenome.py` (shipped) |
+| AlphaGenome 2 K562 track list | AlphaGenome API, read from a 16 kb probe prediction at the start of each run | `*_alphagenome.py --backend api` (runtime) |
 | Reference genome (hg38) | UCSC, fetched on-demand by `pysam` | all (auto-downloaded to `./.cache/`) |
 | Exon CSVs (`Fulco_gene_exons_hg38.csv`, `Gasperini_gene_exons_hg38.csv`) | Ensembl REST API | `*_alphagenome.py` (shipped; regenerated on first run if absent), also read by `*_ntv3.py`, `*_borzoi.py`, `*_cerberus.py` |
 | Enformer `targets_human.txt` | [calico/basenji manuscripts/cross2020](https://github.com/calico/basenji) | `*_enformer.py` (fetched at runtime via HTTPS) |
@@ -370,7 +421,8 @@ If you use this benchmark, please cite the underlying CRISPRi datasets:
 - Fulco CP et al., *Nat Genet* 51 (2019), DOI 10.1038/s41588-019-0538-0
 - Gasperini M et al., *Cell* 176 (2019), DOI 10.1016/j.cell.2018.11.029
 
-…and the models you evaluate (Enformer / Borzoi / Cerberus / NTv3 / AlphaGenome).
+…and the models you evaluate (Enformer / Borzoi / Cerberus / NTv3 / AlphaGenome /
+AlphaGenome 2).
 
 ## License
 

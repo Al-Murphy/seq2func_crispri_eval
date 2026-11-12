@@ -1,0 +1,44 @@
+================================================================================
+FULCO BENCHMARK SUMMARY -- AlphaGenome
+================================================================================
+
+MODEL INFORMATION
+--------------------------------------------------------------------------------
+Model: AlphaGenome 2 (DeepMind AlphaGenome API)
+Client:     alphagenome 2.0.0 | model version ALL_FOLDS | condition EFO:0002067
+Tracks:     AlphaGenome 2 API | condition EFO:0002067 | 12 tracks | strand-aware (+/.: 8, -/.: 8)
+API calls:  3214 (737 retries) | run date 2026-11-12
+
+EVALUATION PARAMETERS
+--------------------------------------------------------------------------------
+Context window:    1,048,576 bp
+Genome build:      hg38
+Fulco data path:   ./metadata/fulco/
+Gene TSS CSV:      ./metadata/Gasperini_gene_tss_hg38_biomart_GRCh38_p14.csv
+Validated only:    True
+N shuffles:        50
+Shuffle seed:      101
+Enhancer window:   2000 bp
+Modality (1 bp head): rna_seq
+TTA shifts:        [0] bp
+TTA reverse-comp:  False
+TTA passes/seq:    1
+Target cell line:  K562
+Metadata file:     ./metadata/track_metadata.parquet
+Tracks:            AlphaGenome 2 API | condition EFO:0002067 | 12 tracks | strand-aware (+/.: 8, -/.: 8)
+Aggregation:       mean over GENCODE exon positions (AlphaGenome paper approach)
+Scoring:           fractional drop (pred_WT - pred_CRISPRi) / (pred_WT + eps)
+Resolution:        1 bp (full AlphaGenome forward)
+Fulco correlation observed subset: knockdown_only
+
+RESULTS
+--------------------------------------------------------------------------------
+Pairs evaluated: 63
+Pairs used for Pearson/Spearman: 63
+Pearson/Spearman (linear y_delta vs pred_delta): see script note — scales often incomparable.
+Pearson r:       0.7527  (p=1.12e-12)
+Spearman r:      0.5123  (p=1.77e-05)
+Log2 alignment (-log2(expr_ratio) vs log2(pred_wt/pred_crispri); primary for RNA-seq):
+Pearson r:       0.7894  (p=1.51e-14)
+Spearman r:      0.5123  (p=1.77e-05)
+================================================================================

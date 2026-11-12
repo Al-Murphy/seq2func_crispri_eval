@@ -31,5 +31,9 @@ transformers
 alphagenome-pytorch
 huggingface_hub
 
+# AlphaGenome 2 through the hosted AlphaGenome API (--backend api; needs an API key,
+# see the README). Brings grpcio; no GPU needed.
+alphagenome>=2.0.0
+
 # Dev / tests (optional)
 pytest
