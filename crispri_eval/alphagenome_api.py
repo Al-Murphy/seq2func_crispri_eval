@@ -13,9 +13,14 @@ strand-matched track selection and exon readout are shared code with the PyTorch
 path and only the forward pass differs.
 
 AlphaGenome 2 is conditioned on a cell type: each request names one condition
-(an ontology CURIE; K562 is ``EFO:0002067``) and the response holds only that
-condition's tracks. The track list for a condition is read once, from a 16 kb
-probe prediction, and every later response is checked against it.
+(an ontology CURIE; K562 is ``EFO:0002067``), which selects that condition's
+learned embedding inside the model, and the response holds only that condition's
+tracks. The track list for a condition is read once, from a 16 kb probe
+prediction, and every later response is checked against it.
+
+The response includes tracks the model imputes for assays never measured in that
+condition (``imputation_mode != "observed"``; K562 RNA-seq has 9 measured and 3
+imputed). By default only measured tracks are read (``observed_only=True``).
 
 Requires the ``alphagenome`` client (>= 2.0.0, ``alphagenome.models.v2``) and an
 API key in a file (default ``~/.config/alphagenome/api_key``). The key is read
@@ -48,25 +53,34 @@ def onehot_to_str(x):
     return _BASES[idx].tobytes().decode("ascii")
 
 
-def strand_bundle(track_strands):
+def strand_bundle(track_strands, keep=None):
     """Strand-matched track indices, the rule the PyTorch scripts apply to their metadata.
 
     The benchmark reverse-complements minus-strand genes, so the gene is always on '+'
     in the input: read '+' and unstranded ('.') tracks forward, '-' and '.' on a
-    reverse-complement pass.
+    reverse-complement pass. ``keep`` (one bool per track) restricts the choice to
+    those tracks, e.g. to measured ones; indices still refer to the full track list.
     """
     strands = [str(s) for s in track_strands]
-    plus = [i for i, s in enumerate(strands) if s in ("+", ".")]
-    minus = [i for i, s in enumerate(strands) if s in ("-", ".")]
-    all_inds = list(range(len(strands)))
+    keep = [True] * len(strands) if keep is None else [bool(k) for k in keep]
+    all_inds = [i for i, k in enumerate(keep) if k]
+    plus = [i for i in all_inds if strands[i] in ("+", ".")]
+    minus = [i for i in all_inds if strands[i] in ("-", ".")]
     return {"all": all_inds, "plus": plus or all_inds, "minus": minus or all_inds}
+
+
+def observed_mask(track_metadata):
+    """True for measured tracks (``imputation_mode == "observed"``); all True if the column is absent."""
+    if "imputation_mode" not in track_metadata.columns:
+        return [True] * len(track_metadata)
+    return list(track_metadata["imputation_mode"].astype(str) == "observed")
 
 
 class AlphaGenomeAPIModel:
     """Callable stand-in for the AlphaGenome PyTorch model, backed by the AlphaGenome 2 API."""
 
     def __init__(self, modality="rna_seq", condition=K562_CURIE, model_version="ALL_FOLDS",
-                 api_key_file=DEFAULT_KEY_FILE, concurrency=4, max_retries=8):
+                 api_key_file=DEFAULT_KEY_FILE, concurrency=4, max_retries=8, observed_only=True):
         from alphagenome.models.v2 import dna_client  # imported here: optional dependency
 
         if modality not in HEADS:
@@ -74,6 +88,7 @@ class AlphaGenomeAPIModel:
         with open(os.path.expanduser(api_key_file)) as fh:
             key = fh.read().strip()
         self._dc = dna_client
+        self.observed_only = observed_only
         self.modality = modality
         self.condition = condition
         self.model_version = model_version
@@ -100,10 +115,16 @@ class AlphaGenomeAPIModel:
         return self
 
     def track_bundle(self):
-        """Strand-matched indices into this condition's tracks, plus a description."""
-        bundle = strand_bundle(self.track_metadata["strand"])
-        desc = "AlphaGenome 2 API | condition {} | {} tracks | strand-aware (+/.: {}, -/.: {})".format(
-            self.condition, len(self.track_metadata), len(bundle["plus"]), len(bundle["minus"]))
+        """Strand-matched indices into this condition's tracks (measured ones only, unless
+        ``observed_only=False``), plus a description."""
+        obs = observed_mask(self.track_metadata)
+        keep = obs if self.observed_only else None
+        bundle = strand_bundle(self.track_metadata["strand"], keep=keep)
+        desc = ("AlphaGenome 2 API | condition {} | {} tracks ({} measured, {} imputed) | {} | "
+                "strand-aware (+/.: {}, -/.: {})").format(
+            self.condition, len(self.track_metadata), sum(obs), len(obs) - sum(obs),
+            "measured only" if self.observed_only else "measured + imputed",
+            len(bundle["plus"]), len(bundle["minus"]))
         return bundle, desc
 
     def _predict(self, seq):

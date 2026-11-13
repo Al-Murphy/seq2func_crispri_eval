@@ -76,6 +76,7 @@ def test_npz_loads_without_pickle(script, tmp_path):
     z = np.load(tmp_path / "P_shard002of008_per_track.npz")  # allow_pickle=False by default
     assert list(z["gene_id"]) == ["ENSG1", "ENSG2"]
     assert list(z["track_name"]) == ["a", "c"] and list(z["track_strand"]) == ["+", "."]
+    assert list(z["track_imputation_mode"]) == ["observed", "observed"]  # no column -> measured
     assert z["wt"].shape == (2, 2) and z["crispri"].shape == (2, 5, 2)
 
 
