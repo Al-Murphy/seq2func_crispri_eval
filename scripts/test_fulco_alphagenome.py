@@ -119,6 +119,9 @@ def parse_args():
                    help="Parallel API calls for --backend api; shuffle batches are raised to this size.")
     p.add_argument("--api_max_retries", type=int, default=8,
                    help="Retries per API call on rate limits / transient errors (exponential backoff).")
+    p.add_argument("--api_include_imputed", action="store_true",
+                   help="Also read tracks AlphaGenome 2 imputes for assays never measured in the "
+                        "condition (default: measured tracks only; outputs get a _with_imputed prefix).")
     p.add_argument("--per_track_export", action="store_true",
                    help="Also save per-track exon means (WT and every shuffle) to "
                         "<prefix>[_shardKKKofNNN]_per_track.npz so any track subset can be rescored "
@@ -578,13 +581,17 @@ def _save_per_track(args, model, track_inds, output_prefix, df_results, pt_wt, p
     if md is not None:
         names = np.asarray(md["name"].astype(str), dtype=str)[plus]
         strands = np.asarray(md["strand"].astype(str), dtype=str)[plus]
+        modes = (np.asarray(md["imputation_mode"].astype(str), dtype=str)[plus]
+                 if "imputation_mode" in md.columns else np.array(["observed"] * len(plus)))
     else:
         names = strands = np.array([""] * len(plus))
+        modes = np.array(["observed"] * len(plus))
     np.savez_compressed(
         path,
         gene_id=np.asarray(df_results["gene_id"].astype(str), dtype=str),
         enh_loc=np.asarray(df_results["enh_loc"].astype(str), dtype=str),
         track_index=np.asarray(plus), track_name=names, track_strand=strands,
+        track_imputation_mode=modes,
         wt=np.stack(pt_wt), crispri=np.stack(pt_cr),
     )
     print("Per-track exon means saved to: {}".format(path))
@@ -654,6 +661,7 @@ def main():
             modality=args.modality, condition=args.api_condition,
             model_version=args.api_model_version, api_key_file=args.api_key_file,
             concurrency=args.api_concurrency, max_retries=args.api_max_retries,
+            observed_only=not args.api_include_imputed,
         )
         model_name = "alphagenome2_api"
         if args.shuffle_batch_size < args.api_concurrency:
@@ -910,8 +918,10 @@ def main():
 
     # Resolve output prefix (shared by shard CSVs and the full summary).
     if args.output_prefix is None:
-        output_prefix = ("Fulco_AlphaGenome2_api_{}" if args.backend == "api"
-                         else "Fulco_AlphaGenome_base_{}").format(args.modality)
+        output_prefix = ("Fulco_AlphaGenome2_api_{}{}".format(
+                             "with_imputed_" if args.api_include_imputed else "", args.modality)
+                         if args.backend == "api"
+                         else "Fulco_AlphaGenome_base_{}".format(args.modality))
     else:
         output_prefix = args.output_prefix
     if args.per_track_export:

@@ -6,7 +6,7 @@ MODEL INFORMATION
 --------------------------------------------------------------------------------
 Model: AlphaGenome 2 (DeepMind AlphaGenome API)
 Client:     alphagenome 2.0.0 | model version ALL_FOLDS | condition EFO:0002067
-Tracks:     AlphaGenome 2 API | condition EFO:0002067 | 12 tracks | strand-aware (+/.: 8, -/.: 8)
+Tracks:     AlphaGenome 2 API | condition EFO:0002067 | 12 tracks (9 measured, 3 imputed) | measured only | strand-aware (+/.: 5, -/.: 5)
 API calls:  3214 (737 retries) | run date 2026-11-12
 
 EVALUATION PARAMETERS
@@ -25,7 +25,7 @@ TTA reverse-comp:  False
 TTA passes/seq:    1
 Target cell line:  K562
 Metadata file:     ./metadata/track_metadata.parquet
-Tracks:            AlphaGenome 2 API | condition EFO:0002067 | 12 tracks | strand-aware (+/.: 8, -/.: 8)
+Tracks:            AlphaGenome 2 API | condition EFO:0002067 | 12 tracks (9 measured, 3 imputed) | measured only | strand-aware (+/.: 5, -/.: 5)
 Aggregation:       mean over GENCODE exon positions (AlphaGenome paper approach)
 Scoring:           fractional drop (pred_WT - pred_CRISPRi) / (pred_WT + eps)
 Resolution:        1 bp (full AlphaGenome forward)
@@ -36,9 +36,13 @@ RESULTS
 Pairs evaluated: 63
 Pairs used for Pearson/Spearman: 63
 Pearson/Spearman (linear y_delta vs pred_delta): see script note — scales often incomparable.
-Pearson r:       0.7527  (p=1.12e-12)
-Spearman r:      0.5123  (p=1.77e-05)
+Pearson r:       0.7489  (p=1.69e-12)
+Spearman r:      0.5005  (p=2.95e-05)
 Log2 alignment (-log2(expr_ratio) vs log2(pred_wt/pred_crispri); primary for RNA-seq):
-Pearson r:       0.7894  (p=1.51e-14)
-Spearman r:      0.5123  (p=1.77e-05)
+Pearson r:       0.7867  (p=2.13e-14)
+Spearman r:      0.5005  (p=2.95e-05)
 ================================================================================
+
+DERIVED 2026-11-13: measured (non-imputed) tracks only, from the per-track exon means of the
+2026-11-12 API run (the _with_imputed_ files keep all 8 strand-matched tracks). Identical to a run
+with the current default (no --api_include_imputed); checked live on one pair.

@@ -9,17 +9,21 @@ Observed subset: all
 
 RESULTS
 --------------------------------------------------------------------------------
-Pearson r  (linear):  0.5340  (p=1.16e-33)
-Spearman r (linear):  0.5154  (p=4.35e-31)
-Pearson r  (log2):    0.4201  (p=3.69e-20)
-Spearman r (log2):    0.5154  (p=4.35e-31)
+Pearson r  (linear):  0.5388  (p=2.43e-34)
+Spearman r (linear):  0.5183  (p=1.78e-31)
+Pearson r  (log2):    0.4274  (p=7.04e-21)
+Spearman r (log2):    0.5183  (p=1.78e-31)
 ================================================================================
 
 PROVENANCE (from job_scripts/s2f_ag2_api.sh, SLURM array 3978027 tasks 1-8)
 --------------------------------------------------------------------------------
 Model:        AlphaGenome 2 (DeepMind AlphaGenome API)
 Client:       alphagenome 2.0.0 | model version ALL_FOLDS | condition EFO:0002067
-Tracks:       12 K562 RNA-seq tracks | strand-aware (+/.: 8, -/.: 8)
+Tracks:       AlphaGenome 2 API | condition EFO:0002067 | 12 tracks (9 measured, 3 imputed) | measured only | strand-aware (+/.: 5, -/.: 5)
 Context:      1,048,576 bp | exon-mean readout | N shuffles 50 | shuffle seed 101
 API calls:    22,346 (438 pairs x 51 + 8 probes) | 5875 retries (rate limits) | run date 2026-11-12
 ================================================================================
+
+DERIVED 2026-11-13: measured (non-imputed) tracks only, from the per-track exon means of the
+2026-11-12 API run (the _with_imputed_ files keep all 8 strand-matched tracks). Identical to a run
+with the current default (no --api_include_imputed); checked live on one pair.

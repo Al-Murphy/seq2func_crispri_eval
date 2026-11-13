@@ -31,10 +31,14 @@ rather than released as weights. The AlphaGenome scripts take `--backend api`,
 which sends each sequence to the API in place of the PyTorch port
 (`crispri_eval/alphagenome_api.py`); windows, shuffles, the strand-matched track
 rule and the exon readout are the same code. Each request names the K562
-condition (`EFO:0002067`), for which the API returns 12 K562 RNA-Seq tracks
-(ENCODE polyA+ and total RNA-Seq, paired- and single-ended, on '+', '-' and
-unstranded); the strand-matched readout averages 8 of them, where AlphaGenome 1
-has 5 K562 RNA-Seq tracks and averages 3. Notes:
+condition (`EFO:0002067`), which selects K562's learned condition embedding
+inside the model, and the API returns K562's 12 RNA-Seq tracks. Nine were
+measured in K562 (ENCODE polyA+ and total RNA-Seq, paired- and single-ended, on
+both strands, plus unstranded polyA+); three are imputed by the model for assays
+never measured in K562 (`imputation_mode` in the track metadata). The readout
+uses measured tracks only: the 5 that are strand-matched, where AlphaGenome 1 has
+5 K562 RNA-Seq tracks and averages 3. `--api_include_imputed` adds the imputed
+tracks (8 strand-matched) and writes `*_with_imputed_*` outputs. Notes:
 
 - The hosted model is not version-pinned, so each summary records the client
   version, model version (`ALL_FOLDS`) and run date. Two runs on 2026-11-12
@@ -44,8 +48,11 @@ has 5 K562 RNA-Seq tracks and averages 3. Notes:
   subset can be rescored offline:
   `w = wt[:, s].mean(1); pred_delta = (w - crispri[:, :, s].mean(2).mean(1)) / w`.
   The three tracks matching AlphaGenome 1's (polyA+ and total RNA-Seq on '+',
-  unstranded polyA+) score the same as all eight, so the track count does not
+  unstranded polyA+) score the same as all five, so the track count does not
   explain the difference between the two models.
+- `results/` holds both versions: the default files (measured tracks) and
+  `*_with_imputed_*` (all 8 strand-matched tracks, from the same API run).
+  Correlations differ by at most 0.01.
 - Zero-shot: the AlphaGenome 2 preprint reports no CRISPRi data in training,
   and no validation metric in checkpoint selection. DeepMind did evaluate on
   the ENCODE-rE2G K562 CRISPRi benchmark, which includes both screens here.
@@ -90,7 +97,7 @@ How each model's output is reduced to one number per sequence:
 | Cerberus | 94 (or 160) K562 RNA, strand-matched (71 / 137) | output bins overlapping the gene's exons | untransformed (Calico `untransform_preds`) |
 | NTv3 | 86 K562 RNA-Seq | mean over the gene's exon bp | model output |
 | AlphaGenome | 5 K562 RNA-Seq, strand-matched (3) | mean over the gene's exon bp | model output |
-| AlphaGenome 2 | 12 K562 RNA-Seq, strand-matched (8) | mean over the gene's exon bp | model output |
+| AlphaGenome 2 | 12 K562 RNA-Seq (9 measured), measured + strand-matched (5) | mean over the gene's exon bp | model output |
 
 RNA-Seq models are read over the gene's exons (GENCODE, shipped as
 `metadata/*_gene_exons_hg38.csv`), which is how AlphaGenome and Calico score genes;
